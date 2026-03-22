@@ -5,7 +5,6 @@ import {
 } from "firebase/firestore";
 import { db } from "./services/firebase";
 
-// ── 상수 ──────────────────────────────────────────────
 const SCHEDULE_TYPES = ["수행평가", "시험", "행사", "과제", "기타"];
 const TYPE_META = {
   수행평가: { color: "#f59e0b", bg: "#fef9ec", icon: "✏️" },
@@ -37,30 +36,23 @@ function getDday(dateStr) {
   return { label: `D+${Math.abs(diff)}`, color: "#cbd5e1", urgent: false, past: true };
 }
 
-// ── 반응형 훅 (SSR 안전) ──────────────────────────────
 function useBreakpoint() {
   const [isMobile, setIsMobile] = useState(false);
-
   useEffect(() => {
-    function check() {
-      setIsMobile(window.innerWidth < 768);
-    }
-    check(); // 마운트 즉시 실행
+    function check() { setIsMobile(window.innerWidth < 768); }
+    check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
-
   return { isMobile };
 }
 
-// ══════════════════════════════════════════════════════
-// CSS 글로벌
-// ══════════════════════════════════════════════════════
 const GLOBAL_CSS = `
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body, #root { height: 100%; }
-  body { background: #f0f4ff; font-family: 'Pretendard', 'Noto Sans KR', sans-serif; }
+  html { width: 100%; height: 100%; }
+  body { width: 100%; height: 100%; background: #f0f4ff; font-family: 'Pretendard', 'Noto Sans KR', sans-serif; overflow: hidden; }
+  #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
   input, textarea, select, button { font-family: inherit; }
   input:focus, textarea:focus, select:focus { outline: none; }
   ::placeholder { color: #94a3b8; }
@@ -74,60 +66,24 @@ const GLOBAL_CSS = `
   @keyframes pulse   { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.85;transform:scale(1.04)} }
   @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(12px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
 
-  .card {
-    background: #fff;
-    border-radius: 18px;
-    border: 1px solid #e8eef8;
-    box-shadow: 0 2px 16px rgba(79,140,255,.06);
-  }
-  .hover-card { transition: transform .18s, box-shadow .18s; cursor: pointer; }
-  .hover-card:hover { transform: translateY(-3px); box-shadow: 0 10px 32px rgba(79,140,255,.13); }
-  .tag {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 4px 10px; border-radius: 20px;
-    font-size: 11px; font-weight: 700;
-  }
-  .input-field {
-    width: 100%; padding: 13px 16px;
-    background: #f8faff; border: 1.5px solid #e8eef8;
-    border-radius: 12px; font-size: 14px; color: #1e293b;
-    transition: border-color .2s, box-shadow .2s;
-  }
-  .input-field:focus {
-    border-color: #4f8cff;
-    box-shadow: 0 0 0 4px rgba(79,140,255,.1);
-    background: #fff;
-  }
-  .btn-primary {
-    padding: 13px 24px; border: none; border-radius: 12px;
-    background: linear-gradient(135deg, #4f8cff, #7c3aed);
-    color: #fff; font-size: 14px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 4px 18px rgba(79,140,255,.3);
-    transition: transform .15s, box-shadow .15s, opacity .15s;
-  }
-  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(79,140,255,.38); }
-  .btn-primary:active { transform: scale(.97); }
-  .btn-primary:disabled { opacity: .65; cursor: not-allowed; transform: none; }
-  .side-nav-btn {
-    width: 100%; padding: 11px 14px; border-radius: 12px; border: none;
-    display: flex; align-items: center; gap: 10px;
-    font-size: 14px; font-weight: 500; cursor: pointer;
-    transition: all .15s; text-align: left; margin-bottom: 3px;
-    background: transparent; color: #64748b;
-  }
-  .side-nav-btn.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
-  .side-nav-btn:hover:not(.active) { background: #f8faff; color: #1e293b; }
-  .bottom-tab {
-    display: flex; flex-direction: column; align-items: center; gap: 3px;
-    padding: 10px 0 8px; border: none; background: #fff; cursor: pointer; transition: background .15s;
-  }
-  .bottom-tab.active { background: #eff6ff; }
-  .bottom-tab:hover { background: #f8faff; }
+  .card { background:#fff; border-radius:18px; border:1px solid #e8eef8; box-shadow:0 2px 16px rgba(79,140,255,.06); }
+  .hover-card { transition:transform .18s,box-shadow .18s; cursor:pointer; }
+  .hover-card:hover { transform:translateY(-3px); box-shadow:0 10px 32px rgba(79,140,255,.13); }
+  .tag { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+  .input-field { width:100%; padding:13px 16px; background:#f8faff; border:1.5px solid #e8eef8; border-radius:12px; font-size:14px; color:#1e293b; transition:border-color .2s,box-shadow .2s; }
+  .input-field:focus { border-color:#4f8cff; box-shadow:0 0 0 4px rgba(79,140,255,.1); background:#fff; }
+  .btn-primary { padding:13px 24px; border:none; border-radius:12px; background:linear-gradient(135deg,#4f8cff,#7c3aed); color:#fff; font-size:14px; font-weight:700; cursor:pointer; box-shadow:0 4px 18px rgba(79,140,255,.3); transition:transform .15s,box-shadow .15s,opacity .15s; }
+  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(79,140,255,.38); }
+  .btn-primary:active { transform:scale(.97); }
+  .btn-primary:disabled { opacity:.65; cursor:not-allowed; transform:none; }
+  .side-nav-btn { width:100%; padding:11px 14px; border-radius:12px; border:none; display:flex; align-items:center; gap:10px; font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; text-align:left; margin-bottom:3px; background:transparent; color:#64748b; }
+  .side-nav-btn.active { background:#eff6ff; color:#1d4ed8; font-weight:700; }
+  .side-nav-btn:hover:not(.active) { background:#f8faff; color:#1e293b; }
+  .bottom-tab { display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 0 8px; border:none; background:#fff; cursor:pointer; transition:background .15s; }
+  .bottom-tab.active { background:#eff6ff; }
+  .bottom-tab:hover { background:#f8faff; }
 `;
 
-// ══════════════════════════════════════════════════════
-// 앱 진입점
-// ══════════════════════════════════════════════════════
 export default function App() {
   const [user, setUser] = useState(() => storage.get("sjdshs_user"));
   const [page, setPage] = useState("home");
@@ -142,9 +98,6 @@ export default function App() {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 로그인
-// ══════════════════════════════════════════════════════
 function LoginPage({ onLogin }) {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -159,7 +112,7 @@ function LoginPage({ onLogin }) {
   }
 
   return (
-    <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0a0f1e", padding:24, position:"relative", overflow:"hidden" }}>
+    <div style={{ width:"100%", minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0a0f1e", padding:24, position:"relative", overflow:"hidden" }}>
       {[[220,"#4f8cff","12%","8%",3.8],[160,"#7c3aed","78%","72%",4.5],[260,"#06b6d4","68%","12%",5.2],[110,"#f59e0b","22%","78%",3.2]].map(([sz,cl,top,left,dur],i) => (
         <div key={i} style={{ position:"absolute", width:sz, height:sz, borderRadius:"50%", background:cl, opacity:.07, top, left, filter:"blur(70px)", animation:`pulse ${dur}s ease-in-out infinite`, animationDelay:`${i*.6}s`, pointerEvents:"none" }} />
       ))}
@@ -174,8 +127,8 @@ function LoginPage({ onLogin }) {
         </div>
         <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"32px 28px" }}>
           {[
-            { label:"이름",    val:name, set:(v)=>setName(v),                ph:"홍길동",            isCode:false },
-            { label:"반 코드", val:code, set:(v)=>setCode(v.toUpperCase()),  ph:"예: AB12 (4자 이상)", isCode:true  },
+            { label:"이름",    val:name, set:(v)=>setName(v),               ph:"홍길동",             isCode:false },
+            { label:"반 코드", val:code, set:(v)=>setCode(v.toUpperCase()), ph:"예: AB12 (4자 이상)", isCode:true  },
           ].map(({ label, val, set, ph, isCode }) => (
             <div key={label} style={{ marginBottom:16 }}>
               <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1.2, marginBottom:8 }}>{label.toUpperCase()}</label>
@@ -200,9 +153,6 @@ function LoginPage({ onLogin }) {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 메인 앱
-// ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
   const { isMobile } = useBreakpoint();
   const [schedules, setSchedules] = useState([]);
@@ -252,22 +202,22 @@ function MainApp({ user, page, setPage, onLogout }) {
   };
 
   return (
-    <div style={{ minHeight:"100dvh", display:"flex", background:"#f0f4ff" }}>
+    <div style={{ width:"100%", height:"100vh", display:"flex", background:"#f0f4ff", overflow:"hidden" }}>
       {toast && (
         <div style={{ position:"fixed", bottom: isMobile ? 88 : 24, left:"50%", transform:"translateX(-50%)", background: toast.type==="error" ? "#ef4444" : "#1e293b", color:"#fff", padding:"11px 22px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
           {toast.msg}
         </div>
       )}
 
-      {/* 사이드바 - 데스크탑/태블릿 */}
+      {/* 사이드바 - 데스크탑 */}
       {!isMobile && (
-        <aside style={{ width:230, minHeight:"100dvh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", position:"sticky", top:0, height:"100dvh", flexShrink:0 }}>
+        <aside style={{ width:230, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
           <div style={{ padding:"28px 20px 18px", borderBottom:"1px solid #f0f4ff" }}>
             <div style={{ fontSize:30, marginBottom:10 }}>🏫</div>
             <div style={{ fontSize:16, fontWeight:900, color:"#1e293b", letterSpacing:-.5 }}>세종대성 클래스</div>
             <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>{user.classCode} 반</div>
           </div>
-          <nav style={{ flex:1, padding:"14px 12px" }}>
+          <nav style={{ flex:1, padding:"14px 12px", overflowY:"auto" }}>
             {NAV.map(n => (
               <button key={n.id} className={`side-nav-btn${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
                 <span style={{ fontSize:19 }}>{n.icon}</span>{n.label}
@@ -293,8 +243,8 @@ function MainApp({ user, page, setPage, onLogout }) {
         </aside>
       )}
 
-      {/* 콘텐츠 */}
-      <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0, width:"100%" }}>
+      {/* 메인 콘텐츠 */}
+      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
 
         {/* 모바일 헤더 */}
         {isMobile && (
@@ -327,7 +277,7 @@ function MainApp({ user, page, setPage, onLogout }) {
           </header>
         )}
 
-        {/* 페이지 콘텐츠 */}
+        {/* 페이지 */}
         <main style={{ flex:1, overflowY:"auto", padding: isMobile ? "20px 16px" : "28px 32px", paddingBottom: isMobile ? 88 : 32 }}>
           {loading
             ? <div style={{ textAlign:"center", padding:"80px 20px" }}><div style={{ fontSize:40, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:14, color:"#94a3b8", marginTop:14, fontWeight:600 }}>불러오는 중...</div></div>
@@ -351,9 +301,6 @@ function MainApp({ user, page, setPage, onLogout }) {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 홈
-// ══════════════════════════════════════════════════════
 function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   const { isMobile } = useBreakpoint();
   const now = new Date();
@@ -361,8 +308,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0, 4);
 
   return (
-    <div style={{ maxWidth:960, margin:"0 auto" }}>
-      {/* 오늘 카드 */}
+    <div style={{ width:"100%" }}>
       <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:22, padding: isMobile ? "22px 22px 20px" : "28px 32px", marginBottom:24, color:"#fff", boxShadow:"0 12px 40px rgba(29,78,216,.28)", position:"relative", overflow:"hidden" }}>
         <div style={{ position:"absolute", right:-30, top:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
         <div style={{ position:"absolute", right:60, bottom:-50, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.04)", pointerEvents:"none" }} />
@@ -388,7 +334,6 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:18 }}>
-        {/* 다가오는 일정 */}
         <div className="card" style={{ padding:22 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
           {upcoming.length === 0
@@ -410,7 +355,6 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        {/* 최근 공지 */}
         <div className="card" style={{ padding:22 }}>
           <SectionHeader title="📢 최근 공지" onMore={() => setPage("notice")} />
           {notices.length === 0
@@ -425,7 +369,6 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        {/* D-Day 임박 카드 */}
         {urgentSchedules.map((s, i) => {
           const dd   = getDday(s.date);
           const meta = TYPE_META[s.type] || TYPE_META["기타"];
@@ -443,9 +386,6 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 일정
-// ══════════════════════════════════════════════════════
 function SchedulePage({ user, schedules, setSchedules, showToast }) {
   const { isMobile } = useBreakpoint();
   const [showForm, setShowForm] = useState(false);
@@ -477,7 +417,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
   }
 
   return (
-    <div style={{ maxWidth:820, margin:"0 auto" }}>
+    <div style={{ width:"100%" }}>
       <PageHeader title="일정 관리" sub="수행평가·시험·행사를 등록해요" action={
         <button onClick={() => setShowForm(!showForm)} style={{ padding:"10px 20px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 일정 추가"}
@@ -550,9 +490,6 @@ function SchedCard({ s, user, onDel, past }) {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 공지
-// ══════════════════════════════════════════════════════
 function NoticePage({ user, notices, setNotices, showToast }) {
   const { isMobile } = useBreakpoint();
   const [showForm, setShowForm] = useState(false);
@@ -585,7 +522,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   }
 
   return (
-    <div style={{ maxWidth:820, margin:"0 auto" }}>
+    <div style={{ width:"100%" }}>
       <PageHeader title="공지 공유" sub="친구들에게 중요한 내용을 공유해요" action={
         <button onClick={() => setShowForm(!showForm)} style={{ padding:"10px 20px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 공지 작성"}
@@ -634,9 +571,6 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 급식
-// ══════════════════════════════════════════════════════
 function LunchPage() {
   const { isMobile } = useBreakpoint();
   const todayStr  = getTodayStr();
@@ -645,7 +579,7 @@ function LunchPage() {
   const dayKr     = ["일","월","화","수","목","금","토"];
 
   return (
-    <div style={{ maxWidth:820, margin:"0 auto" }}>
+    <div style={{ width:"100%" }}>
       <PageHeader title="급식 메뉴" sub="NEIS API 연동 전 샘플 데이터예요" />
       {todayMenu ? (
         <div style={{ background:"linear-gradient(135deg,#059669,#10b981 60%,#34d399)", borderRadius:20, padding: isMobile ? "22px" : "26px 30px", marginBottom:22, color:"#fff", boxShadow:"0 10px 32px rgba(16,185,129,.28)", position:"relative", overflow:"hidden" }}>
@@ -685,9 +619,6 @@ function LunchPage() {
   );
 }
 
-// ══════════════════════════════════════════════════════
-// 공통
-// ══════════════════════════════════════════════════════
 function PageHeader({ title, sub, action }) {
   return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:22 }}>
