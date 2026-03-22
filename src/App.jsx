@@ -37,14 +37,20 @@ function getDday(dateStr) {
   return { label: `D+${Math.abs(diff)}`, color: "#cbd5e1", urgent: false, past: true };
 }
 
+// ── 반응형 훅 (SSR 안전) ──────────────────────────────
 function useBreakpoint() {
-  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
+  const [isMobile, setIsMobile] = useState(false);
+
   useEffect(() => {
-    const h = () => setW(window.innerWidth);
-    window.addEventListener("resize", h);
-    return () => window.removeEventListener("resize", h);
+    function check() {
+      setIsMobile(window.innerWidth < 768);
+    }
+    check(); // 마운트 즉시 실행
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
   }, []);
-  return { isMobile: w < 768, isTablet: w < 1024 };
+
+  return { isMobile };
 }
 
 // ══════════════════════════════════════════════════════
@@ -53,6 +59,7 @@ function useBreakpoint() {
 const GLOBAL_CSS = `
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
   body { background: #f0f4ff; font-family: 'Pretendard', 'Noto Sans KR', sans-serif; }
   input, textarea, select, button { font-family: inherit; }
   input:focus, textarea:focus, select:focus { outline: none; }
@@ -66,7 +73,6 @@ const GLOBAL_CSS = `
   @keyframes float   { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
   @keyframes pulse   { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.85;transform:scale(1.04)} }
   @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(12px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
-  @keyframes spin    { to{transform:rotate(360deg)} }
 
   .card {
     background: #fff;
@@ -74,14 +80,8 @@ const GLOBAL_CSS = `
     border: 1px solid #e8eef8;
     box-shadow: 0 2px 16px rgba(79,140,255,.06);
   }
-  .hover-card {
-    transition: transform .18s, box-shadow .18s;
-    cursor: pointer;
-  }
-  .hover-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 32px rgba(79,140,255,.13);
-  }
+  .hover-card { transition: transform .18s, box-shadow .18s; cursor: pointer; }
+  .hover-card:hover { transform: translateY(-3px); box-shadow: 0 10px 32px rgba(79,140,255,.13); }
   .tag {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 20px;
@@ -89,10 +89,8 @@ const GLOBAL_CSS = `
   }
   .input-field {
     width: 100%; padding: 13px 16px;
-    background: #f8faff;
-    border: 1.5px solid #e8eef8;
-    border-radius: 12px;
-    font-size: 14px; color: #1e293b;
+    background: #f8faff; border: 1.5px solid #e8eef8;
+    border-radius: 12px; font-size: 14px; color: #1e293b;
     transition: border-color .2s, box-shadow .2s;
   }
   .input-field:focus {
@@ -119,7 +117,10 @@ const GLOBAL_CSS = `
   }
   .side-nav-btn.active { background: #eff6ff; color: #1d4ed8; font-weight: 700; }
   .side-nav-btn:hover:not(.active) { background: #f8faff; color: #1e293b; }
-  .bottom-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 10px 0 8px; border: none; background: #fff; cursor: pointer; transition: background .15s; }
+  .bottom-tab {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 10px 0 8px; border: none; background: #fff; cursor: pointer; transition: background .15s;
+  }
   .bottom-tab.active { background: #eff6ff; }
   .bottom-tab:hover { background: #f8faff; }
 `;
@@ -157,21 +158,12 @@ function LoginPage({ onLogin }) {
     setTimeout(() => onLogin({ name: name.trim(), classCode: code.trim().toUpperCase() }), 350);
   }
 
-  const orbs = [
-    [220,"#4f8cff","12%","8%",3.8],
-    [160,"#7c3aed","78%","72%",4.5],
-    [260,"#06b6d4","68%","12%",5.2],
-    [110,"#f59e0b","22%","78%",3.2],
-  ];
-
   return (
     <div style={{ minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0a0f1e", padding:24, position:"relative", overflow:"hidden" }}>
-      {orbs.map(([sz,cl,top,left,dur],i) => (
+      {[[220,"#4f8cff","12%","8%",3.8],[160,"#7c3aed","78%","72%",4.5],[260,"#06b6d4","68%","12%",5.2],[110,"#f59e0b","22%","78%",3.2]].map(([sz,cl,top,left,dur],i) => (
         <div key={i} style={{ position:"absolute", width:sz, height:sz, borderRadius:"50%", background:cl, opacity:.07, top, left, filter:"blur(70px)", animation:`pulse ${dur}s ease-in-out infinite`, animationDelay:`${i*.6}s`, pointerEvents:"none" }} />
       ))}
-
       <div style={{ width:"100%", maxWidth:400, position:"relative", zIndex:1, animation:"fadeUp .5s ease" }}>
-        {/* 로고 */}
         <div style={{ textAlign:"center", marginBottom:36 }}>
           <div style={{ fontSize:60, display:"inline-block", marginBottom:14, animation:"float 3.5s ease-in-out infinite" }}>🏫</div>
           <h1 style={{ fontSize:30, fontWeight:900, color:"#fff", letterSpacing:-1, lineHeight:1.15 }}>
@@ -180,31 +172,24 @@ function LoginPage({ onLogin }) {
           </h1>
           <p style={{ color:"#475569", fontSize:13, marginTop:10 }}>우리 반 전용 일정 · 공지 앱</p>
         </div>
-
         <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"32px 28px" }}>
           {[
-            { label:"이름",    val:name, set:(v)=>setName(v),           ph:"홍길동",           isCode:false },
-            { label:"반 코드", val:code, set:(v)=>setCode(v.toUpperCase()), ph:"예: AB12 (4자 이상)", isCode:true  },
+            { label:"이름",    val:name, set:(v)=>setName(v),                ph:"홍길동",            isCode:false },
+            { label:"반 코드", val:code, set:(v)=>setCode(v.toUpperCase()),  ph:"예: AB12 (4자 이상)", isCode:true  },
           ].map(({ label, val, set, ph, isCode }) => (
             <div key={label} style={{ marginBottom:16 }}>
               <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1.2, marginBottom:8 }}>{label.toUpperCase()}</label>
-              <input
-                value={val} placeholder={ph}
+              <input value={val} placeholder={ph}
                 onChange={e => { set(e.target.value); setErr(""); }}
-                onKeyDown={e => e.key === "Enter" && submit()}
+                onKeyDown={e => e.key==="Enter" && submit()}
                 style={{ width:"100%", padding:"14px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15, letterSpacing: isCode ? 2 : 0, fontWeight: isCode ? 700 : 400 }}
               />
             </div>
           ))}
-
-          {err && (
-            <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:14 }}>⚠️ {err}</div>
-          )}
-
+          {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:14 }}>⚠️ {err}</div>}
           <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"15px", fontSize:15, fontWeight:800 }}>
             {busy ? "입장 중..." : "입장하기 →"}
           </button>
-
           <p style={{ textAlign:"center", fontSize:11, color:"#475569", marginTop:14, lineHeight:1.8 }}>
             💡 같은 코드를 쓰면 같은 반으로 묶여요<br/>
             <span style={{ color:"#60a5fa", fontWeight:700 }}>DEMO</span> 코드로 체험해볼 수 있어요
@@ -216,7 +201,7 @@ function LoginPage({ onLogin }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 메인 앱 (레이아웃)
+// 메인 앱
 // ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
   const { isMobile } = useBreakpoint();
@@ -225,7 +210,7 @@ function MainApp({ user, page, setPage, onLogout }) {
   const [loading,   setLoading]   = useState(true);
   const [toast,     setToast]     = useState(null);
 
-  const showToast = useCallback((msg, type = "info") => {
+  const showToast = useCallback((msg, type="info") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
   }, []);
@@ -242,7 +227,7 @@ function MainApp({ user, page, setPage, onLogout }) {
         setNotices(ns.docs.map(d => ({ id:d.id, ...d.data() })));
       } catch(e) {
         console.error(e);
-        showToast("❌ 데이터 로드 실패", "error");
+        showToast("❌ 데이터 로드 실패","error");
       }
       setLoading(false);
     })();
@@ -268,15 +253,13 @@ function MainApp({ user, page, setPage, onLogout }) {
 
   return (
     <div style={{ minHeight:"100dvh", display:"flex", background:"#f0f4ff" }}>
-
-      {/* Toast */}
       {toast && (
         <div style={{ position:"fixed", bottom: isMobile ? 88 : 24, left:"50%", transform:"translateX(-50%)", background: toast.type==="error" ? "#ef4444" : "#1e293b", color:"#fff", padding:"11px 22px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
           {toast.msg}
         </div>
       )}
 
-      {/* ─ 사이드바 (태블릿+) ─ */}
+      {/* 사이드바 - 데스크탑/태블릿 */}
       {!isMobile && (
         <aside style={{ width:230, minHeight:"100dvh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", position:"sticky", top:0, height:"100dvh", flexShrink:0 }}>
           <div style={{ padding:"28px 20px 18px", borderBottom:"1px solid #f0f4ff" }}>
@@ -302,16 +285,16 @@ function MainApp({ user, page, setPage, onLogout }) {
               </div>
             </div>
             <button onClick={onLogout} style={{ width:"100%", padding:"9px", borderRadius:10, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
-              onMouseEnter={e => { e.target.style.background="#fff1f1"; e.target.style.color="#ef4444"; e.target.style.borderColor="#fecaca"; }}
-              onMouseLeave={e => { e.target.style.background="#f8faff"; e.target.style.color="#94a3b8"; e.target.style.borderColor="#e8eef8"; }}>
+              onMouseEnter={e=>{e.currentTarget.style.background="#fff1f1";e.currentTarget.style.color="#ef4444";e.currentTarget.style.borderColor="#fecaca";}}
+              onMouseLeave={e=>{e.currentTarget.style.background="#f8faff";e.currentTarget.style.color="#94a3b8";e.currentTarget.style.borderColor="#e8eef8";}}>
               로그아웃
             </button>
           </div>
         </aside>
       )}
 
-      {/* ─ 콘텐츠 영역 ─ */}
-      <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
+      {/* 콘텐츠 */}
+      <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0, width:"100%" }}>
 
         {/* 모바일 헤더 */}
         {isMobile && (
@@ -324,7 +307,7 @@ function MainApp({ user, page, setPage, onLogout }) {
           </header>
         )}
 
-        {/* 데스크탑/태블릿 상단 바 */}
+        {/* 데스크탑 상단 바 */}
         {!isMobile && (
           <header style={{ background:"#fff", borderBottom:"1px solid #e8eef8", padding:"16px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
             <div>
@@ -344,7 +327,7 @@ function MainApp({ user, page, setPage, onLogout }) {
           </header>
         )}
 
-        {/* 페이지 */}
+        {/* 페이지 콘텐츠 */}
         <main style={{ flex:1, overflowY:"auto", padding: isMobile ? "20px 16px" : "28px 32px", paddingBottom: isMobile ? 88 : 32 }}>
           {loading
             ? <div style={{ textAlign:"center", padding:"80px 20px" }}><div style={{ fontSize:40, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:14, color:"#94a3b8", marginTop:14, fontWeight:600 }}>불러오는 중...</div></div>
@@ -373,17 +356,16 @@ function MainApp({ user, page, setPage, onLogout }) {
 // ══════════════════════════════════════════════════════
 function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   const { isMobile } = useBreakpoint();
-  const now      = new Date();
+  const now = new Date();
   const dayNames = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
   const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0, 4);
 
   return (
     <div style={{ maxWidth:960, margin:"0 auto" }}>
-
       {/* 오늘 카드 */}
       <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:22, padding: isMobile ? "22px 22px 20px" : "28px 32px", marginBottom:24, color:"#fff", boxShadow:"0 12px 40px rgba(29,78,216,.28)", position:"relative", overflow:"hidden" }}>
-        <div style={{ position:"absolute", right:-30, top:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.07)" }} />
-        <div style={{ position:"absolute", right:60, bottom:-50, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.04)" }} />
+        <div style={{ position:"absolute", right:-30, top:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", right:60, bottom:-50, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.04)", pointerEvents:"none" }} />
         <div style={{ position:"relative" }}>
           <div style={{ fontSize:11, color:"rgba(255,255,255,.6)", fontWeight:700, letterSpacing:2, marginBottom:5 }}>TODAY</div>
           <div style={{ fontSize: isMobile ? 22 : 26, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 14 : 0 }}>
@@ -405,9 +387,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
         </div>
       </div>
 
-      {/* 2열 그리드 */}
       <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:18 }}>
-
         {/* 다가오는 일정 */}
         <div className="card" style={{ padding:22 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
@@ -445,7 +425,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        {/* D-Day 임박 카드들 */}
+        {/* D-Day 임박 카드 */}
         {urgentSchedules.map((s, i) => {
           const dd   = getDday(s.date);
           const meta = TYPE_META[s.type] || TYPE_META["기타"];
@@ -560,7 +540,7 @@ function SchedCard({ s, user, onDel, past }) {
           {!past && <span style={{ fontSize:13, fontWeight:900, color:dd.color }}>{dd.label}</span>}
           {s.authorName === user.name && (
             <button onClick={()=>onDel(s.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:15, cursor:"pointer", padding:2, lineHeight:1, transition:"color .15s" }}
-              onMouseEnter={e=>e.target.style.color="#ef4444"} onMouseLeave={e=>e.target.style.color="#e2e8f0"}>✕</button>
+              onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
           )}
         </div>
       </div>
@@ -636,7 +616,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
                   <div style={{ fontSize:15, fontWeight:800, color:"#1e293b", flex:1, lineHeight:1.4, paddingRight:8 }}>{n.title}</div>
                   {n.authorName === user.name && (
                     <button onClick={()=>del(n.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:15, cursor:"pointer", flexShrink:0, lineHeight:1, transition:"color .15s" }}
-                      onMouseEnter={e=>e.target.style.color="#ef4444"} onMouseLeave={e=>e.target.style.color="#e2e8f0"}>✕</button>
+                      onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
                   )}
                 </div>
                 <div style={{ fontSize:13, color:"#475569", lineHeight:1.75, marginBottom:14 }}>{n.content}</div>
@@ -667,7 +647,6 @@ function LunchPage() {
   return (
     <div style={{ maxWidth:820, margin:"0 auto" }}>
       <PageHeader title="급식 메뉴" sub="NEIS API 연동 전 샘플 데이터예요" />
-
       {todayMenu ? (
         <div style={{ background:"linear-gradient(135deg,#059669,#10b981 60%,#34d399)", borderRadius:20, padding: isMobile ? "22px" : "26px 30px", marginBottom:22, color:"#fff", boxShadow:"0 10px 32px rgba(16,185,129,.28)", position:"relative", overflow:"hidden" }}>
           <div style={{ position:"absolute", right:-20, top:-20, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.08)", pointerEvents:"none" }} />
@@ -681,7 +660,6 @@ function LunchPage() {
       ) : (
         <div className="card" style={{ padding:28, textAlign:"center", color:"#94a3b8", marginBottom:22 }}>오늘은 급식 정보가 없어요 😢</div>
       )}
-
       <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:12 }}>
         {menuDays.map(([date, menu]) => {
           const d = new Date(date);
@@ -708,7 +686,7 @@ function LunchPage() {
 }
 
 // ══════════════════════════════════════════════════════
-// 공통 컴포넌트
+// 공통
 // ══════════════════════════════════════════════════════
 function PageHeader({ title, sub, action }) {
   return (
