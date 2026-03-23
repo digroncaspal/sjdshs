@@ -5,6 +5,14 @@ import {
 } from "firebase/firestore";
 import { db } from "./services/firebase";
 
+// ── 상수 ──────────────────────────────────────────────
+const NEIS = {
+  KEY:       import.meta.env.VITE_NEIS_API_KEY,
+  ATPT_CODE: "I10",
+  SCHUL_CODE: "9300278",
+  BASE:      "https://open.neis.go.kr/hub",
+};
+
 const SCHEDULE_TYPES = ["수행평가", "시험", "행사", "과제", "기타"];
 const TYPE_META = {
   수행평가: { color: "#f59e0b", bg: "#fef9ec", icon: "✏️" },
@@ -14,22 +22,30 @@ const TYPE_META = {
   기타:     { color: "#6b7280", bg: "#f9fafb", icon: "📌" },
 };
 
-const SAMPLE_LUNCH = {
-  "2026-03-22": ["잡곡밥", "된장찌개", "제육볶음", "깍두기", "우유"],
-  "2026-03-23": ["현미밥", "김치찌개", "고등어구이", "시금치나물", "요구르트"],
-  "2026-03-24": ["쌀밥", "부대찌개", "닭강정", "콩나물무침", "사과"],
-  "2026-03-25": ["보리밥", "순두부찌개", "불고기", "무생채", "우유"],
-  "2026-03-26": ["흑미밥", "미역국", "돈까스", "단무지", "우유"],
-};
+const GRADE_LABELS = ["1학년", "2학년", "3학년"];
+const CLASS_LABELS = ["1반", "2반", "3반", "4반", "5반", "6반", "7반", "8반", "9반", "10반"];
 
 const storage = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
 
-function getTodayStr() { return new Date().toISOString().slice(0, 10); }
+function getTodayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ""); }
+function getTodayDash() { return new Date().toISOString().slice(0, 10); }
+function getWeekDates() {
+  const today = new Date();
+  const day = today.getDay();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (day === 0 ? 6 : day - 1));
+  return Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d.toISOString().slice(0, 10).replace(/-/g, "");
+  });
+}
+
 function getDday(dateStr) {
-  const diff = Math.ceil((new Date(dateStr) - new Date(getTodayStr())) / 86400000);
+  const diff = Math.ceil((new Date(dateStr) - new Date(getTodayDash())) / 86400000);
   if (diff === 0) return { label: "D-Day", color: "#ef4444", urgent: true };
   if (diff > 0 && diff <= 7) return { label: `D-${diff}`, color: "#f59e0b", urgent: true };
   if (diff > 0) return { label: `D-${diff}`, color: "#94a3b8", urgent: false };
@@ -47,6 +63,53 @@ function useBreakpoint() {
   return { isMobile };
 }
 
+// ── NEIS API 함수 ──────────────────────────────────────
+async function fetchLunch(dateStr) {
+  try {
+    const url = `${NEIS.BASE}/mealServiceDietInfo?KEY=${NEIS.KEY}&Type=json&ATPT_OFCDC_SC_CODE=${NEIS.ATPT_CODE}&SD_SCHUL_CODE=${NEIS.SCHUL_CODE}&MLSV_YMD=${dateStr}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    const rows = data?.mealServiceDietInfo?.[1]?.row;
+    if (!rows) return null;
+    const lunch = rows.find(r => r.MMEAL_SC_NM === "중식") || rows[0];
+    if (!lunch) return null;
+    return lunch.DDISH_NM.replace(/<br\/>/g, "\n").split("\n").map(item =>
+      item.replace(/\([\d.,/]+\)/g, "").trim()
+    ).filter(Boolean);
+  } catch { return null; }
+}
+
+async function fetchWeekLunch() {
+  const dates = getWeekDates();
+  const results = await Promise.all(dates.map(d => fetchLunch(d)));
+  const map = {};
+  dates.forEach((d, i) => {
+    if (results[i]) {
+      const dash = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+      map[dash] = results[i];
+    }
+  });
+  return map;
+}
+
+async function fetchTimetable(grade, classNum, date) {
+  try {
+    const url = `${NEIS.BASE}/hisTimetable?KEY=${NEIS.KEY}&Type=json&ATPT_OFCDC_SC_CODE=${NEIS.ATPT_CODE}&SD_SCHUL_CODE=${NEIS.SCHUL_CODE}&AY=${new Date().getFullYear()}&SEM=1&ALL_TI_YMD=${date}&GRADE=${grade}&CLASS_NM=${classNum}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    const rows = data?.hisTimetable?.[1]?.row;
+    if (!rows) return [];
+    return rows.sort((a, b) => Number(a.PERIO) - Number(b.PERIO)).map(r => ({
+      period: r.PERIO,
+      subject: r.ITRT_CNTNT,
+      teacher: r.TCHR_NM,
+    }));
+  } catch { return []; }
+}
+
+// ══════════════════════════════════════════════════════
+// CSS
+// ══════════════════════════════════════════════════════
 const GLOBAL_CSS = `
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -65,6 +128,7 @@ const GLOBAL_CSS = `
   @keyframes float   { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
   @keyframes pulse   { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.85;transform:scale(1.04)} }
   @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(12px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+  @keyframes spin    { to { transform: rotate(360deg); } }
 
   .card { background:#fff; border-radius:18px; border:1px solid #e8eef8; box-shadow:0 2px 16px rgba(79,140,255,.06); }
   .hover-card { transition:transform .18s,box-shadow .18s; cursor:pointer; }
@@ -84,6 +148,9 @@ const GLOBAL_CSS = `
   .bottom-tab:hover { background:#f8faff; }
 `;
 
+// ══════════════════════════════════════════════════════
+// 앱 진입점
+// ══════════════════════════════════════════════════════
 export default function App() {
   const [user, setUser] = useState(() => storage.get("sjdshs_user"));
   const [page, setPage] = useState("home");
@@ -98,17 +165,22 @@ export default function App() {
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 로그인
+// ══════════════════════════════════════════════════════
 function LoginPage({ onLogin }) {
-  const [name, setName] = useState("");
-  const [code, setCode] = useState("");
-  const [err,  setErr]  = useState("");
-  const [busy, setBusy] = useState(false);
+  const [name,  setName]  = useState("");
+  const [code,  setCode]  = useState("");
+  const [grade, setGrade] = useState("1");
+  const [cls,   setCls]   = useState("1");
+  const [err,   setErr]   = useState("");
+  const [busy,  setBusy]  = useState(false);
 
   function submit() {
     if (!name.trim())           { setErr("이름을 입력해주세요"); return; }
     if (code.trim().length < 4) { setErr("반 코드는 4자 이상이에요"); return; }
     setBusy(true);
-    setTimeout(() => onLogin({ name: name.trim(), classCode: code.trim().toUpperCase() }), 350);
+    setTimeout(() => onLogin({ name: name.trim(), classCode: code.trim().toUpperCase(), grade, cls }), 350);
   }
 
   return (
@@ -116,34 +188,52 @@ function LoginPage({ onLogin }) {
       {[[220,"#4f8cff","12%","8%",3.8],[160,"#7c3aed","78%","72%",4.5],[260,"#06b6d4","68%","12%",5.2],[110,"#f59e0b","22%","78%",3.2]].map(([sz,cl,top,left,dur],i) => (
         <div key={i} style={{ position:"absolute", width:sz, height:sz, borderRadius:"50%", background:cl, opacity:.07, top, left, filter:"blur(70px)", animation:`pulse ${dur}s ease-in-out infinite`, animationDelay:`${i*.6}s`, pointerEvents:"none" }} />
       ))}
-      <div style={{ width:"100%", maxWidth:400, position:"relative", zIndex:1, animation:"fadeUp .5s ease" }}>
-        <div style={{ textAlign:"center", marginBottom:36 }}>
-          <div style={{ fontSize:60, display:"inline-block", marginBottom:14, animation:"float 3.5s ease-in-out infinite" }}>🏫</div>
-          <h1 style={{ fontSize:30, fontWeight:900, color:"#fff", letterSpacing:-1, lineHeight:1.15 }}>
+      <div style={{ width:"100%", maxWidth:420, position:"relative", zIndex:1, animation:"fadeUp .5s ease" }}>
+        <div style={{ textAlign:"center", marginBottom:32 }}>
+          <div style={{ fontSize:56, display:"inline-block", marginBottom:12, animation:"float 3.5s ease-in-out infinite" }}>🏫</div>
+          <h1 style={{ fontSize:28, fontWeight:900, color:"#fff", letterSpacing:-1, lineHeight:1.15 }}>
             세종대성<br/>
             <span style={{ background:"linear-gradient(90deg,#60a5fa,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>클래스</span>
           </h1>
-          <p style={{ color:"#475569", fontSize:13, marginTop:10 }}>우리 반 전용 일정 · 공지 앱</p>
+          <p style={{ color:"#475569", fontSize:13, marginTop:8 }}>우리 반 전용 일정 · 공지 · 급식 · 시간표</p>
         </div>
-        <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"32px 28px" }}>
-          {[
-            { label:"이름",    val:name, set:(v)=>setName(v),               ph:"홍길동",             isCode:false },
-            { label:"반 코드", val:code, set:(v)=>setCode(v.toUpperCase()), ph:"예: AB12 (4자 이상)", isCode:true  },
-          ].map(({ label, val, set, ph, isCode }) => (
-            <div key={label} style={{ marginBottom:16 }}>
-              <label style={{ display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1.2, marginBottom:8 }}>{label.toUpperCase()}</label>
-              <input value={val} placeholder={ph}
-                onChange={e => { set(e.target.value); setErr(""); }}
-                onKeyDown={e => e.key==="Enter" && submit()}
-                style={{ width:"100%", padding:"14px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15, letterSpacing: isCode ? 2 : 0, fontWeight: isCode ? 700 : 400 }}
-              />
+        <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"28px 24px" }}>
+          <div style={{ marginBottom:14 }}>
+            <label style={LOGIN_LBL}>이름</label>
+            <input value={name} placeholder="홍길동" onChange={e=>{setName(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+              style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15 }} />
+          </div>
+
+          {/* 학년 / 반 */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+            <div>
+              <label style={LOGIN_LBL}>학년</label>
+              <select value={grade} onChange={e=>setGrade(e.target.value)}
+                style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
+                {["1","2","3"].map(g => <option key={g} value={g}>{g}학년</option>)}
+              </select>
             </div>
-          ))}
-          {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:14 }}>⚠️ {err}</div>}
-          <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"15px", fontSize:15, fontWeight:800 }}>
+            <div>
+              <label style={LOGIN_LBL}>반</label>
+              <select value={cls} onChange={e=>setCls(e.target.value)}
+                style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
+                {Array.from({length:10},(_,i)=>i+1).map(c => <option key={c} value={String(c)}>{c}반</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ marginBottom:8 }}>
+            <label style={LOGIN_LBL}>반 코드</label>
+            <input value={code} placeholder="예: AB12 (4자 이상)" onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+              style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15, letterSpacing:2, fontWeight:700 }} />
+          </div>
+
+          {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:12 }}>⚠️ {err}</div>}
+
+          <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"14px", fontSize:15, fontWeight:800 }}>
             {busy ? "입장 중..." : "입장하기 →"}
           </button>
-          <p style={{ textAlign:"center", fontSize:11, color:"#475569", marginTop:14, lineHeight:1.8 }}>
+          <p style={{ textAlign:"center", fontSize:11, color:"#475569", marginTop:12, lineHeight:1.8 }}>
             💡 같은 코드를 쓰면 같은 반으로 묶여요<br/>
             <span style={{ color:"#60a5fa", fontWeight:700 }}>DEMO</span> 코드로 체험해볼 수 있어요
           </p>
@@ -153,6 +243,11 @@ function LoginPage({ onLogin }) {
   );
 }
 
+const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1.2, marginBottom:7 };
+
+// ══════════════════════════════════════════════════════
+// 메인 앱
+// ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
   const { isMobile } = useBreakpoint();
   const [schedules, setSchedules] = useState([]);
@@ -183,7 +278,7 @@ function MainApp({ user, page, setPage, onLogout }) {
     })();
   }, [user.classCode]);
 
-  const todayStr = getTodayStr();
+  const todayStr = getTodayDash();
   const upcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
   const todaySch = schedules.filter(s => s.date === todayStr);
 
@@ -192,13 +287,15 @@ function MainApp({ user, page, setPage, onLogout }) {
     { id:"schedule", icon:"📅", label:"일정" },
     { id:"notice",   icon:"📢", label:"공지" },
     { id:"lunch",    icon:"🍱", label:"급식" },
+    { id:"timetable",icon:"📖", label:"시간표" },
   ];
 
   const pages = {
-    home:     <HomePage     user={user} schedules={schedules} notices={notices} upcoming={upcoming} todaySch={todaySch} setPage={setPage} loading={loading} />,
-    schedule: <SchedulePage user={user} schedules={schedules} setSchedules={setSchedules} showToast={showToast} />,
-    notice:   <NoticePage   user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
-    lunch:    <LunchPage />,
+    home:      <HomePage      user={user} schedules={schedules} notices={notices} upcoming={upcoming} todaySch={todaySch} setPage={setPage} loading={loading} />,
+    schedule:  <SchedulePage  user={user} schedules={schedules} setSchedules={setSchedules} showToast={showToast} />,
+    notice:    <NoticePage    user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
+    lunch:     <LunchPage />,
+    timetable: <TimetablePage user={user} />,
   };
 
   return (
@@ -209,32 +306,32 @@ function MainApp({ user, page, setPage, onLogout }) {
         </div>
       )}
 
-      {/* 사이드바 - 데스크탑 */}
+      {/* 사이드바 */}
       {!isMobile && (
         <aside style={{ width:230, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
-          <div style={{ padding:"28px 20px 18px", borderBottom:"1px solid #f0f4ff" }}>
-            <div style={{ fontSize:30, marginBottom:10 }}>🏫</div>
-            <div style={{ fontSize:16, fontWeight:900, color:"#1e293b", letterSpacing:-.5 }}>세종대성 클래스</div>
-            <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>{user.classCode} 반</div>
+          <div style={{ padding:"24px 20px 16px", borderBottom:"1px solid #f0f4ff" }}>
+            <div style={{ fontSize:28, marginBottom:8 }}>🏫</div>
+            <div style={{ fontSize:15, fontWeight:900, color:"#1e293b", letterSpacing:-.5 }}>세종대성 클래스</div>
+            <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>{user.classCode} · {user.grade}학년 {user.cls}반</div>
           </div>
-          <nav style={{ flex:1, padding:"14px 12px", overflowY:"auto" }}>
+          <nav style={{ flex:1, padding:"12px 12px", overflowY:"auto" }}>
             {NAV.map(n => (
               <button key={n.id} className={`side-nav-btn${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize:19 }}>{n.icon}</span>{n.label}
+                <span style={{ fontSize:18 }}>{n.icon}</span>{n.label}
               </button>
             ))}
           </nav>
-          <div style={{ padding:"16px", borderTop:"1px solid #f0f4ff" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-              <div style={{ width:38, height:38, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:15, flexShrink:0 }}>
+          <div style={{ padding:"14px", borderTop:"1px solid #f0f4ff" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+              <div style={{ width:36, height:36, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:14, flexShrink:0 }}>
                 {user.name[0]}
               </div>
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
-                <div style={{ fontSize:11, color:"#94a3b8" }}>{user.classCode} 반</div>
+                <div style={{ fontSize:11, color:"#94a3b8" }}>{user.grade}학년 {user.cls}반</div>
               </div>
             </div>
-            <button onClick={onLogout} style={{ width:"100%", padding:"9px", borderRadius:10, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
+            <button onClick={onLogout} style={{ width:"100%", padding:"8px", borderRadius:10, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
               onMouseEnter={e=>{e.currentTarget.style.background="#fff1f1";e.currentTarget.style.color="#ef4444";e.currentTarget.style.borderColor="#fecaca";}}
               onMouseLeave={e=>{e.currentTarget.style.background="#f8faff";e.currentTarget.style.color="#94a3b8";e.currentTarget.style.borderColor="#e8eef8";}}>
               로그아웃
@@ -243,55 +340,53 @@ function MainApp({ user, page, setPage, onLogout }) {
         </aside>
       )}
 
-      {/* 메인 콘텐츠 */}
+      {/* 콘텐츠 */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
-
-        {/* 모바일 헤더 */}
         {isMobile && (
-          <header style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5)", padding:"14px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", boxShadow:"0 4px 20px rgba(29,78,216,.28)", flexShrink:0 }}>
+          <header style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5)", padding:"12px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", boxShadow:"0 4px 20px rgba(29,78,216,.28)", flexShrink:0 }}>
             <div>
-              <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", letterSpacing:2, fontWeight:700 }}>{user.classCode} 반</div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#fff" }}>안녕하세요, {user.name}님 👋</div>
+              <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", letterSpacing:2, fontWeight:700 }}>{user.grade}학년 {user.cls}반 · {user.classCode}</div>
+              <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>안녕하세요, {user.name}님 👋</div>
             </div>
-            <button onClick={onLogout} style={{ background:"rgba(255,255,255,.15)", border:"none", padding:"7px 14px", borderRadius:20, color:"rgba(255,255,255,.9)", fontSize:12, fontWeight:600, cursor:"pointer" }}>나가기</button>
+            <button onClick={onLogout} style={{ background:"rgba(255,255,255,.15)", border:"none", padding:"6px 12px", borderRadius:20, color:"rgba(255,255,255,.9)", fontSize:12, fontWeight:600, cursor:"pointer" }}>나가기</button>
           </header>
         )}
 
-        {/* 데스크탑 상단 바 */}
         {!isMobile && (
-          <header style={{ background:"#fff", borderBottom:"1px solid #e8eef8", padding:"16px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+          <header style={{ background:"#fff", borderBottom:"1px solid #e8eef8", padding:"14px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
             <div>
-              <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>
-                {{ home:"🏠 홈", schedule:"📅 일정 관리", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴" }[page]}
+              <h2 style={{ fontSize:17, fontWeight:900, color:"#1e293b" }}>
+                {{ home:"🏠 홈", schedule:"📅 일정 관리", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴", timetable:"📖 시간표" }[page]}
               </h2>
-              <div style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>
+              <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>
                 {new Date().toLocaleDateString("ko-KR",{ year:"numeric", month:"long", day:"numeric", weekday:"long" })}
               </div>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ width:36, height:36, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:14 }}>
+              <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13 }}>
                 {user.name[0]}
               </div>
-              <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
+                <div style={{ fontSize:11, color:"#94a3b8" }}>{user.grade}학년 {user.cls}반</div>
+              </div>
             </div>
           </header>
         )}
 
-        {/* 페이지 */}
-        <main style={{ flex:1, overflowY:"auto", padding: isMobile ? "20px 16px" : "28px 32px", paddingBottom: isMobile ? 88 : 32 }}>
+        <main style={{ flex:1, overflowY:"auto", padding: isMobile ? "18px 16px" : "24px 32px", paddingBottom: isMobile ? 88 : 28 }}>
           {loading
             ? <div style={{ textAlign:"center", padding:"80px 20px" }}><div style={{ fontSize:40, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:14, color:"#94a3b8", marginTop:14, fontWeight:600 }}>불러오는 중...</div></div>
             : <div key={page} style={{ animation:"slideUp .3s ease" }}>{pages[page]}</div>
           }
         </main>
 
-        {/* 모바일 하단 탭 */}
         {isMobile && (
-          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(4,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
+          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(5,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
             {NAV.map(n => (
               <button key={n.id} className={`bottom-tab${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize:22 }}>{n.icon}</span>
-                <span style={{ fontSize:10, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
+                <span style={{ fontSize:20 }}>{n.icon}</span>
+                <span style={{ fontSize:9, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
               </button>
             ))}
           </nav>
@@ -301,6 +396,9 @@ function MainApp({ user, page, setPage, onLogout }) {
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 홈
+// ══════════════════════════════════════════════════════
 function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   const { isMobile } = useBreakpoint();
   const now = new Date();
@@ -309,32 +407,31 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
 
   return (
     <div style={{ width:"100%" }}>
-      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:22, padding: isMobile ? "22px 22px 20px" : "28px 32px", marginBottom:24, color:"#fff", boxShadow:"0 12px 40px rgba(29,78,216,.28)", position:"relative", overflow:"hidden" }}>
+      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:20, padding: isMobile ? "20px" : "26px 30px", marginBottom:20, color:"#fff", boxShadow:"0 12px 40px rgba(29,78,216,.28)", position:"relative", overflow:"hidden" }}>
         <div style={{ position:"absolute", right:-30, top:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
-        <div style={{ position:"absolute", right:60, bottom:-50, width:220, height:220, borderRadius:"50%", background:"rgba(255,255,255,.04)", pointerEvents:"none" }} />
         <div style={{ position:"relative" }}>
-          <div style={{ fontSize:11, color:"rgba(255,255,255,.6)", fontWeight:700, letterSpacing:2, marginBottom:5 }}>TODAY</div>
-          <div style={{ fontSize: isMobile ? 22 : 26, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 14 : 0 }}>
+          <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:700, letterSpacing:2, marginBottom:4 }}>TODAY</div>
+          <div style={{ fontSize: isMobile ? 20 : 24, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 12 : 0 }}>
             {now.getMonth()+1}월 {now.getDate()}일 {dayNames[now.getDay()]}
           </div>
           {todaySch.length > 0
             ? todaySch.map(s => {
               const meta = TYPE_META[s.type] || TYPE_META["기타"];
               return (
-                <div key={s.id} style={{ background:"rgba(255,255,255,.15)", backdropFilter:"blur(10px)", borderRadius:12, padding:"10px 14px", display:"flex", alignItems:"center", gap:10, marginTop:8 }}>
-                  <span style={{ fontSize:16 }}>{meta.icon}</span>
-                  <span style={{ fontSize:14, fontWeight:600, flex:1 }}>{s.title}</span>
+                <div key={s.id} style={{ background:"rgba(255,255,255,.15)", backdropFilter:"blur(10px)", borderRadius:10, padding:"9px 13px", display:"flex", alignItems:"center", gap:10, marginTop:7 }}>
+                  <span style={{ fontSize:15 }}>{meta.icon}</span>
+                  <span style={{ fontSize:13, fontWeight:600, flex:1 }}>{s.title}</span>
                   <span className="tag" style={{ background:"rgba(255,255,255,.2)", color:"#fff" }}>{s.type}</span>
                 </div>
               );
             })
-            : <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:6 }}>오늘 등록된 일정이 없어요 😌</div>
+            : <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:5 }}>오늘 등록된 일정이 없어요 😌</div>
           }
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:18 }}>
-        <div className="card" style={{ padding:22 }}>
+      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:16 }}>
+        <div className="card" style={{ padding:20 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
           {upcoming.length === 0
             ? <EmptyMini icon="📅" text="다가오는 일정이 없어요" />
@@ -342,8 +439,8 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
               const dd   = getDday(s.date);
               const meta = TYPE_META[s.type] || TYPE_META["기타"];
               return (
-                <div key={s.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 0", borderBottom:"1px solid #f8faff" }}>
-                  <div style={{ width:38, height:38, borderRadius:10, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, flexShrink:0 }}>{meta.icon}</div>
+                <div key={s.id} style={{ display:"flex", alignItems:"center", gap:11, padding:"9px 0", borderBottom:"1px solid #f8faff" }}>
+                  <div style={{ width:36, height:36, borderRadius:9, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>{meta.icon}</div>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.title}</div>
                     <div style={{ fontSize:11, color:"#94a3b8", marginTop:1 }}>{s.date.slice(5).replace("-","/")} · {s.authorName}</div>
@@ -355,15 +452,15 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        <div className="card" style={{ padding:22 }}>
+        <div className="card" style={{ padding:20 }}>
           <SectionHeader title="📢 최근 공지" onMore={() => setPage("notice")} />
           {notices.length === 0
             ? <EmptyMini icon="📢" text="공지가 없어요" />
             : notices.slice(0,3).map(n => (
-              <div key={n.id} style={{ padding:"10px 0", borderBottom:"1px solid #f8faff" }}>
-                <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:3 }}>{n.title}</div>
+              <div key={n.id} style={{ padding:"9px 0", borderBottom:"1px solid #f8faff" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:2 }}>{n.title}</div>
                 <div style={{ fontSize:12, color:"#64748b", lineHeight:1.5, overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>{n.content}</div>
-                <div style={{ fontSize:10, color:"#cbd5e1", marginTop:5 }}>{n.authorName}</div>
+                <div style={{ fontSize:10, color:"#cbd5e1", marginTop:4 }}>{n.authorName}</div>
               </div>
             ))
           }
@@ -373,11 +470,11 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           const dd   = getDday(s.date);
           const meta = TYPE_META[s.type] || TYPE_META["기타"];
           return (
-            <div key={s.id} className="card hover-card" onClick={() => setPage("schedule")} style={{ padding:22, borderLeft:`4px solid ${meta.color}`, animation:`popIn .35s ease ${i*.08}s both` }}>
-              <span className="tag" style={{ background:meta.bg, color:meta.color, marginBottom:12 }}>{meta.icon} {s.type}</span>
-              <div style={{ fontSize:15, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
-              <div style={{ fontSize:11, color:"#94a3b8", marginBottom:14 }}>{s.date}</div>
-              <div style={{ fontSize:34, fontWeight:900, color:dd.color, letterSpacing:-1 }}>{dd.label}</div>
+            <div key={s.id} className="card hover-card" onClick={() => setPage("schedule")} style={{ padding:20, borderLeft:`4px solid ${meta.color}`, animation:`popIn .35s ease ${i*.08}s both` }}>
+              <span className="tag" style={{ background:meta.bg, color:meta.color, marginBottom:10 }}>{meta.icon} {s.type}</span>
+              <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
+              <div style={{ fontSize:11, color:"#94a3b8", marginBottom:12 }}>{s.date}</div>
+              <div style={{ fontSize:32, fontWeight:900, color:dd.color, letterSpacing:-1 }}>{dd.label}</div>
             </div>
           );
         })}
@@ -386,12 +483,15 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 일정
+// ══════════════════════════════════════════════════════
 function SchedulePage({ user, schedules, setSchedules, showToast }) {
   const { isMobile } = useBreakpoint();
   const [showForm, setShowForm] = useState(false);
   const [form,    setForm]     = useState({ title:"", date:"", type:"수행평가" });
   const [saving,  setSaving]   = useState(false);
-  const todayStr = getTodayStr();
+  const todayStr = getTodayDash();
 
   const upcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
   const past     = schedules.filter(s => s.date < todayStr).sort((a,b) => b.date.localeCompare(a.date));
@@ -419,14 +519,14 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
   return (
     <div style={{ width:"100%" }}>
       <PageHeader title="일정 관리" sub="수행평가·시험·행사를 등록해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"10px 20px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 일정 추가"}
         </button>
       } />
 
       {showForm && (
-        <div className="card" style={{ padding:24, marginBottom:22, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr 1fr", gap:12, marginBottom:16 }}>
+        <div className="card" style={{ padding:22, marginBottom:20, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr 1fr", gap:12, marginBottom:14 }}>
             <div>
               <label style={LBL}>제목</label>
               <input className="input-field" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="예: 영어 수행평가" />
@@ -447,9 +547,9 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       )}
 
       {upcoming.length > 0 && (
-        <section style={{ marginBottom:28 }}>
+        <section style={{ marginBottom:24 }}>
           <GroupLabel>다가오는 일정 ({upcoming.length})</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:11 }}>
             {upcoming.map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} />)}
           </div>
         </section>
@@ -458,12 +558,11 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       {past.length > 0 && (
         <section>
           <GroupLabel faded>지난 일정</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:10, opacity:.5 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:9, opacity:.5 }}>
             {past.slice(0,6).map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} past />)}
           </div>
         </section>
       )}
-
       {schedules.length === 0 && <EmptyFull icon="📅" text="아직 일정이 없어요" sub="위 버튼으로 첫 일정을 추가해보세요!" />}
     </div>
   );
@@ -473,23 +572,26 @@ function SchedCard({ s, user, onDel, past }) {
   const dd   = getDday(s.date);
   const meta = TYPE_META[s.type] || TYPE_META["기타"];
   return (
-    <div className="card hover-card" style={{ padding:18, borderLeft:`3px solid ${dd.urgent&&!past ? meta.color : "#f0f4ff"}` }}>
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:10 }}>
+    <div className="card hover-card" style={{ padding:16, borderLeft:`3px solid ${dd.urgent&&!past ? meta.color : "#f0f4ff"}` }}>
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:8 }}>
         <span className="tag" style={{ background:meta.bg, color:meta.color }}>{meta.icon} {s.type}</span>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          {!past && <span style={{ fontSize:13, fontWeight:900, color:dd.color }}>{dd.label}</span>}
+          {!past && <span style={{ fontSize:12, fontWeight:900, color:dd.color }}>{dd.label}</span>}
           {s.authorName === user.name && (
-            <button onClick={()=>onDel(s.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:15, cursor:"pointer", padding:2, lineHeight:1, transition:"color .15s" }}
+            <button onClick={()=>onDel(s.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:14, cursor:"pointer", padding:2, lineHeight:1, transition:"color .15s" }}
               onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
           )}
         </div>
       </div>
-      <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:4 }}>{s.title}</div>
+      <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
       <div style={{ fontSize:11, color:"#94a3b8" }}>{s.date.slice(5).replace("-","/")} · {s.authorName}</div>
     </div>
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 공지
+// ══════════════════════════════════════════════════════
 function NoticePage({ user, notices, setNotices, showToast }) {
   const { isMobile } = useBreakpoint();
   const [showForm, setShowForm] = useState(false);
@@ -524,18 +626,18 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   return (
     <div style={{ width:"100%" }}>
       <PageHeader title="공지 공유" sub="친구들에게 중요한 내용을 공유해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"10px 20px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 공지 작성"}
         </button>
       } />
 
       {showForm && (
-        <div className="card" style={{ padding:24, marginBottom:22, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
+        <div className="card" style={{ padding:22, marginBottom:20, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
           <div style={{ marginBottom:12 }}>
             <label style={LBL}>제목</label>
             <input className="input-field" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="예: 내일 체육복 지참" />
           </div>
-          <div style={{ marginBottom:16 }}>
+          <div style={{ marginBottom:14 }}>
             <label style={LBL}>내용</label>
             <textarea className="input-field" value={form.content} onChange={e=>setForm({...form,content:e.target.value})} placeholder="자세한 내용을 써주세요" rows={4} style={{ resize:"none", lineHeight:1.7 }} />
           </div>
@@ -546,19 +648,19 @@ function NoticePage({ user, notices, setNotices, showToast }) {
       {notices.length === 0
         ? <EmptyFull icon="📢" text="아직 공지가 없어요" sub="위 버튼으로 친구들에게 알려주세요!" />
         : (
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:14 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:13 }}>
             {notices.map(n => (
-              <div key={n.id} className="card hover-card" style={{ padding:22, animation:"popIn .3s ease" }}>
-                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:10 }}>
-                  <div style={{ fontSize:15, fontWeight:800, color:"#1e293b", flex:1, lineHeight:1.4, paddingRight:8 }}>{n.title}</div>
+              <div key={n.id} className="card hover-card" style={{ padding:20 }}>
+                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:9 }}>
+                  <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", flex:1, lineHeight:1.4, paddingRight:8 }}>{n.title}</div>
                   {n.authorName === user.name && (
                     <button onClick={()=>del(n.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:15, cursor:"pointer", flexShrink:0, lineHeight:1, transition:"color .15s" }}
                       onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
                   )}
                 </div>
-                <div style={{ fontSize:13, color:"#475569", lineHeight:1.75, marginBottom:14 }}>{n.content}</div>
+                <div style={{ fontSize:13, color:"#475569", lineHeight:1.75, marginBottom:12 }}>{n.content}</div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ width:26, height:26, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:11, fontWeight:900, flexShrink:0 }}>{n.authorName[0]}</div>
+                  <div style={{ width:24, height:24, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:10, fontWeight:900, flexShrink:0 }}>{n.authorName[0]}</div>
                   <span style={{ fontSize:11, color:"#94a3b8" }}>{n.authorName}</span>
                   <span style={{ fontSize:11, color:"#e2e8f0", marginLeft:"auto" }}>{fmtDate(n.createdAt)}</span>
                 </div>
@@ -571,59 +673,186 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 급식 (NEIS API)
+// ══════════════════════════════════════════════════════
 function LunchPage() {
   const { isMobile } = useBreakpoint();
-  const todayStr  = getTodayStr();
-  const todayMenu = SAMPLE_LUNCH[todayStr];
-  const menuDays  = Object.entries(SAMPLE_LUNCH).sort(([a],[b]) => a.localeCompare(b));
+  const [lunchMap, setLunchMap] = useState({});
+  const [loading,  setLoading]  = useState(true);
+  const todayDash = getTodayDash();
   const dayKr     = ["일","월","화","수","목","금","토"];
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const data = await fetchWeekLunch();
+      setLunchMap(data);
+      setLoading(false);
+    })();
+  }, []);
+
+  const todayMenu = lunchMap[todayDash];
+  const menuDays  = Object.entries(lunchMap).sort(([a],[b]) => a.localeCompare(b));
+
+  if (loading) return (
+    <div style={{ textAlign:"center", padding:"60px 20px" }}>
+      <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>🍱</div>
+      <div style={{ fontSize:13, color:"#94a3b8", marginTop:12 }}>급식 정보 불러오는 중...</div>
+    </div>
+  );
 
   return (
     <div style={{ width:"100%" }}>
-      <PageHeader title="급식 메뉴" sub="NEIS API 연동 전 샘플 데이터예요" />
+      <PageHeader title="급식 메뉴" sub="세종대성고등학교 이번 주 급식이에요" />
+
       {todayMenu ? (
-        <div style={{ background:"linear-gradient(135deg,#059669,#10b981 60%,#34d399)", borderRadius:20, padding: isMobile ? "22px" : "26px 30px", marginBottom:22, color:"#fff", boxShadow:"0 10px 32px rgba(16,185,129,.28)", position:"relative", overflow:"hidden" }}>
-          <div style={{ position:"absolute", right:-20, top:-20, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.08)", pointerEvents:"none" }} />
+        <div style={{ background:"linear-gradient(135deg,#059669,#10b981 60%,#34d399)", borderRadius:18, padding: isMobile ? "20px" : "24px 28px", marginBottom:20, color:"#fff", boxShadow:"0 10px 32px rgba(16,185,129,.28)", position:"relative", overflow:"hidden" }}>
+          <div style={{ position:"absolute", right:-20, top:-20, width:140, height:140, borderRadius:"50%", background:"rgba(255,255,255,.08)", pointerEvents:"none" }} />
           <div style={{ fontSize:11, color:"rgba(255,255,255,.7)", fontWeight:700, letterSpacing:2, marginBottom:10 }}>TODAY'S LUNCH</div>
           <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-            {todayMenu.map((item,i)=>(
-              <span key={i} style={{ background:"rgba(255,255,255,.2)", backdropFilter:"blur(8px)", padding:"8px 15px", borderRadius:20, fontSize:14, fontWeight:600 }}>{item}</span>
+            {todayMenu.map((item,i) => (
+              <span key={i} style={{ background:"rgba(255,255,255,.2)", backdropFilter:"blur(8px)", padding:"7px 13px", borderRadius:20, fontSize:13, fontWeight:600 }}>{item}</span>
             ))}
           </div>
         </div>
       ) : (
-        <div className="card" style={{ padding:28, textAlign:"center", color:"#94a3b8", marginBottom:22 }}>오늘은 급식 정보가 없어요 😢</div>
+        <div className="card" style={{ padding:24, textAlign:"center", color:"#94a3b8", marginBottom:20 }}>오늘은 급식 정보가 없어요 😢</div>
       )}
-      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:12 }}>
-        {menuDays.map(([date, menu]) => {
-          const d = new Date(date);
-          const isToday = date === todayStr;
-          return (
-            <div key={date} className="card hover-card" style={{ padding:18, borderLeft:`3px solid ${isToday?"#10b981":"#f0f4ff"}` }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
-                <span className="tag" style={{ background: isToday?"#d1fae5":"#f1f5f9", color: isToday?"#059669":"#64748b" }}>
-                  {date.slice(5).replace("-","/")} ({dayKr[d.getDay()]})
-                </span>
-                {isToday && <span style={{ fontSize:11, color:"#059669", fontWeight:700 }}>오늘</span>}
+
+      {menuDays.length === 0 ? (
+        <div className="card" style={{ padding:24, textAlign:"center", color:"#94a3b8" }}>이번 주 급식 정보가 없어요</div>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:11 }}>
+          {menuDays.map(([date, menu]) => {
+            const d = new Date(date);
+            const isToday = date === todayDash;
+            return (
+              <div key={date} className="card hover-card" style={{ padding:16, borderLeft:`3px solid ${isToday?"#10b981":"#f0f4ff"}` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                  <span className="tag" style={{ background: isToday?"#d1fae5":"#f1f5f9", color: isToday?"#059669":"#64748b" }}>
+                    {date.slice(5).replace("-","/")} ({dayKr[d.getDay()]})
+                  </span>
+                  {isToday && <span style={{ fontSize:11, color:"#059669", fontWeight:700 }}>오늘</span>}
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                  {menu.map((item,i) => (
+                    <span key={i} style={{ fontSize:12, padding:"4px 9px", borderRadius:20, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
+                  ))}
+                </div>
               </div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                {menu.map((item,i)=>(
-                  <span key={i} style={{ fontSize:12, padding:"5px 10px", borderRadius:20, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
+// ══════════════════════════════════════════════════════
+// 시간표 (NEIS API)
+// ══════════════════════════════════════════════════════
+function TimetablePage({ user }) {
+  const { isMobile } = useBreakpoint();
+  const [timetable, setTimetable] = useState({});
+  const [loading,   setLoading]   = useState(true);
+  const [selGrade,  setSelGrade]  = useState(user.grade || "1");
+  const [selClass,  setSelClass]  = useState(user.cls   || "1");
+
+  const weekDates = getWeekDates();
+  const dayNames  = ["월","화","수","목","금"];
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const results = await Promise.all(
+        weekDates.map(d => fetchTimetable(selGrade, selClass, d))
+      );
+      const map = {};
+      weekDates.forEach((d, i) => { map[d] = results[i]; });
+      setTimetable(map);
+      setLoading(false);
+    })();
+  }, [selGrade, selClass]);
+
+  const maxPeriod = Math.max(0, ...Object.values(timetable).flat().map(r => Number(r.period)));
+
+  return (
+    <div style={{ width:"100%" }}>
+      <PageHeader title="시간표" sub="이번 주 시간표예요" />
+
+      {/* 학년/반 선택 */}
+      <div style={{ display:"flex", gap:10, marginBottom:20 }}>
+        <select value={selGrade} onChange={e=>setSelGrade(e.target.value)} className="input-field" style={{ maxWidth:110 }}>
+          {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
+        </select>
+        <select value={selClass} onChange={e=>setSelClass(e.target.value)} className="input-field" style={{ maxWidth:110 }}>
+          {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
+        </select>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign:"center", padding:"60px 20px" }}>
+          <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>📖</div>
+          <div style={{ fontSize:13, color:"#94a3b8", marginTop:12 }}>시간표 불러오는 중...</div>
+        </div>
+      ) : maxPeriod === 0 ? (
+        <EmptyFull icon="📖" text="시간표 정보가 없어요" sub="학기 중에 다시 확인해보세요" />
+      ) : (
+        <div className="card" style={{ overflow:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize: isMobile ? 12 : 13 }}>
+            <thead>
+              <tr style={{ background:"#f8faff" }}>
+                <th style={{ padding:"10px 8px", color:"#94a3b8", fontWeight:700, fontSize:11, borderBottom:"1px solid #f0f4ff", width:36 }}>교시</th>
+                {weekDates.map((d, i) => {
+                  const isToday = d === getTodayStr();
+                  return (
+                    <th key={d} style={{ padding:"10px 8px", fontWeight:700, fontSize:12, borderBottom:"1px solid #f0f4ff", color: isToday ? "#1d4ed8" : "#475569", background: isToday ? "#eff6ff" : "transparent", minWidth: isMobile ? 60 : 80 }}>
+                      {dayNames[i]}<br/>
+                      <span style={{ fontSize:10, fontWeight:500, color:"#94a3b8" }}>{d.slice(4,6)}/{d.slice(6,8)}</span>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({length: maxPeriod}, (_, i) => i + 1).map(period => (
+                <tr key={period} style={{ borderBottom:"1px solid #f8faff" }}>
+                  <td style={{ padding:"10px 8px", textAlign:"center", fontWeight:700, color:"#94a3b8", fontSize:12 }}>{period}</td>
+                  {weekDates.map((d, di) => {
+                    const isToday = d === getTodayStr();
+                    const lesson = timetable[d]?.find(r => Number(r.period) === period);
+                    return (
+                      <td key={d} style={{ padding:"10px 8px", textAlign:"center", background: isToday ? "#f8fbff" : "transparent" }}>
+                        {lesson ? (
+                          <div>
+                            <div style={{ fontWeight:700, color:"#1e293b" }}>{lesson.subject}</div>
+                            {lesson.teacher && <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{lesson.teacher}</div>}
+                          </div>
+                        ) : (
+                          <span style={{ color:"#e2e8f0" }}>-</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════
+// 공통
+// ══════════════════════════════════════════════════════
 function PageHeader({ title, sub, action }) {
   return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:22 }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
       <div>
-        <h2 style={{ fontSize:20, fontWeight:900, color:"#1e293b" }}>{title}</h2>
+        <h2 style={{ fontSize:19, fontWeight:900, color:"#1e293b" }}>{title}</h2>
         {sub && <p style={{ fontSize:12, color:"#94a3b8", marginTop:3 }}>{sub}</p>}
       </div>
       {action}
@@ -633,27 +862,27 @@ function PageHeader({ title, sub, action }) {
 
 function SectionHeader({ title, onMore }) {
   return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-      <div style={{ fontSize:14, fontWeight:800, color:"#1e293b" }}>{title}</div>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:13 }}>
+      <div style={{ fontSize:13, fontWeight:800, color:"#1e293b" }}>{title}</div>
       <button onClick={onMore} style={{ background:"none", border:"none", fontSize:12, color:"#94a3b8", fontWeight:600, cursor:"pointer" }}>더보기 →</button>
     </div>
   );
 }
 
 function GroupLabel({ children, faded }) {
-  return <div style={{ fontSize:11, fontWeight:700, color: faded?"#cbd5e1":"#94a3b8", letterSpacing:1.5, marginBottom:12 }}>{children}</div>;
+  return <div style={{ fontSize:11, fontWeight:700, color: faded?"#cbd5e1":"#94a3b8", letterSpacing:1.5, marginBottom:11 }}>{children}</div>;
 }
 
 function EmptyMini({ icon, text }) {
-  return <div style={{ textAlign:"center", padding:"24px 0", color:"#cbd5e1" }}><span style={{ fontSize:28 }}>{icon}</span><div style={{ fontSize:12, fontWeight:600, marginTop:8 }}>{text}</div></div>;
+  return <div style={{ textAlign:"center", padding:"22px 0", color:"#cbd5e1" }}><span style={{ fontSize:26 }}>{icon}</span><div style={{ fontSize:12, fontWeight:600, marginTop:7 }}>{text}</div></div>;
 }
 
 function EmptyFull({ icon, text, sub }) {
   return (
-    <div style={{ textAlign:"center", padding:"72px 20px", color:"#94a3b8" }}>
-      <div style={{ fontSize:50, marginBottom:14 }}>{icon}</div>
-      <div style={{ fontSize:16, fontWeight:700, color:"#64748b", marginBottom:6 }}>{text}</div>
-      {sub && <div style={{ fontSize:13 }}>{sub}</div>}
+    <div style={{ textAlign:"center", padding:"64px 20px", color:"#94a3b8" }}>
+      <div style={{ fontSize:46, marginBottom:12 }}>{icon}</div>
+      <div style={{ fontSize:15, fontWeight:700, color:"#64748b", marginBottom:5 }}>{text}</div>
+      {sub && <div style={{ fontSize:12 }}>{sub}</div>}
     </div>
   );
 }
