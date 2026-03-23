@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   const { from, to } = req.query;
-  const KEY   = process.env.VITE_NEIS_API_KEY;
+  const KEY = process.env.NEIS_API_KEY;
   const ATPT  = "I10";
   const SCHUL = "9300278";
 
