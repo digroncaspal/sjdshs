@@ -21,42 +21,35 @@ const MEAL_META = {
   석식: { icon: "🌙", color: "#6366f1", bg: "#ede9fe", label: "석식 (저녁)" },
 };
 
+const DAY_KR  = ["일","월","화","수","목","금","토"];
+const MONTH_KR = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+
 const storage = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k, v) => localStorage.setItem(k, JSON.stringify(v)),
 };
 
-function getTodayStr()  { return new Date().toISOString().slice(0, 10).replace(/-/g, ""); }
-function getTodayDash() { return new Date().toISOString().slice(0, 10); }
+function getTodayStr()  { return new Date().toISOString().slice(0,10).replace(/-/g,""); }
+function getTodayDash() { return new Date().toISOString().slice(0,10); }
 
 function getWeekDates() {
   const today = new Date();
   const day   = today.getDay();
   const mon   = new Date(today);
   mon.setDate(today.getDate() - (day === 0 ? 6 : day - 1));
-  return Array.from({ length: 5 }, (_, i) => {
+  return Array.from({length:5}, (_,i) => {
     const d = new Date(mon);
     d.setDate(mon.getDate() + i);
-    return d.toISOString().slice(0, 10).replace(/-/g, "");
+    return d.toISOString().slice(0,10).replace(/-/g,"");
   });
-}
-
-function getMonthRange() {
-  const now   = new Date();
-  const year  = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const from  = `${year}${month}01`;
-  const last  = new Date(year, now.getMonth() + 1, 0).getDate();
-  const to    = `${year}${month}${String(last).padStart(2, "0")}`;
-  return { from, to };
 }
 
 function getDday(dateStr) {
   const diff = Math.ceil((new Date(dateStr) - new Date(getTodayDash())) / 86400000);
-  if (diff === 0) return { label: "D-Day", color: "#ef4444", urgent: true };
-  if (diff > 0 && diff <= 7) return { label: `D-${diff}`, color: "#f59e0b", urgent: true };
-  if (diff > 0) return { label: `D-${diff}`, color: "#94a3b8", urgent: false };
-  return { label: `D+${Math.abs(diff)}`, color: "#cbd5e1", urgent: false, past: true };
+  if (diff === 0) return { label:"D-Day", color:"#ef4444", urgent:true };
+  if (diff > 0 && diff <= 7) return { label:`D-${diff}`, color:"#f59e0b", urgent:true };
+  if (diff > 0) return { label:`D-${diff}`, color:"#94a3b8", urgent:false };
+  return { label:`D+${Math.abs(diff)}`, color:"#cbd5e1", urgent:false, past:true };
 }
 
 function useBreakpoint() {
@@ -71,9 +64,9 @@ function useBreakpoint() {
 }
 
 // ── NEIS API ──────────────────────────────────────────
-function parseMenuItems(raw) {
-  return raw.replace(/<br\/>/g, "\n").split("\n")
-    .map(item => item.replace(/\([\d.,/]+\)/g, "").trim())
+function parseMenu(raw) {
+  return raw.replace(/<br\/>/g,"\n").split("\n")
+    .map(s => s.replace(/\([\d.,/]+\)/g,"").trim())
     .filter(Boolean);
 }
 
@@ -84,10 +77,7 @@ async function fetchDayMeals(dateStr) {
     const rows = data?.mealServiceDietInfo?.[1]?.row;
     if (!rows) return {};
     const meals = {};
-    rows.forEach(r => {
-      const type = r.MMEAL_SC_NM; // 조식/중식/석식
-      meals[type] = parseMenuItems(r.DDISH_NM);
-    });
+    rows.forEach(r => { meals[r.MMEAL_SC_NM] = parseMenu(r.DDISH_NM); });
     return meals;
   } catch { return {}; }
 }
@@ -96,30 +86,19 @@ async function fetchWeekMeals() {
   const dates   = getWeekDates();
   const results = await Promise.all(dates.map(d => fetchDayMeals(d)));
   const map = {};
-  dates.forEach((d, i) => {
+  dates.forEach((d,i) => {
     const dash = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
     if (Object.keys(results[i]).length > 0) map[dash] = results[i];
   });
   return map;
 }
 
-async function fetchTimetable(grade, classNum, date) {
+async function fetchMonthSchedule(year, month) {
   try {
-    const res  = await fetch(`/api/timetable?grade=${grade}&classNum=${classNum}&date=${date}`);
-    const data = await res.json();
-    const rows = data?.hisTimetable?.[1]?.row;
-    if (!rows) return [];
-    return rows.sort((a, b) => Number(a.PERIO) - Number(b.PERIO)).map(r => ({
-      period:  r.PERIO,
-      subject: r.ITRT_CNTNT,
-      teacher: r.TCHR_NM,
-    }));
-  } catch { return []; }
-}
-
-async function fetchSchoolSchedule() {
-  try {
-    const { from, to } = getMonthRange();
+    const m    = String(month).padStart(2,"0");
+    const last = new Date(year, month, 0).getDate();
+    const from = `${year}${m}01`;
+    const to   = `${year}${m}${String(last).padStart(2,"0")}`;
     const res  = await fetch(`/api/schedule?from=${from}&to=${to}`);
     const data = await res.json();
     const rows = data?.SchoolSchedule?.[1]?.row;
@@ -136,15 +115,15 @@ async function fetchSchoolSchedule() {
 // ══════════════════════════════════════════════════════
 const GLOBAL_CSS = `
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { width: 100%; height: 100%; }
-  body { width: 100%; height: 100%; background: #f0f4ff; font-family: 'Pretendard', 'Noto Sans KR', sans-serif; overflow: hidden; }
-  #root { width: 100%; height: 100%; display: flex; flex-direction: column; }
-  input, textarea, select, button { font-family: inherit; }
-  input:focus, textarea:focus, select:focus { outline: none; }
-  ::placeholder { color: #94a3b8; }
-  ::-webkit-scrollbar { width: 5px; }
-  ::-webkit-scrollbar-thumb { background: #dbeafe; border-radius: 4px; }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  html { width:100%; height:100%; }
+  body { width:100%; height:100%; background:#f0f4ff; font-family:'Pretendard','Noto Sans KR',sans-serif; overflow:hidden; }
+  #root { width:100%; height:100%; display:flex; flex-direction:column; }
+  input,textarea,select,button { font-family:inherit; }
+  input:focus,textarea:focus,select:focus { outline:none; }
+  ::placeholder { color:#94a3b8; }
+  ::-webkit-scrollbar { width:5px; }
+  ::-webkit-scrollbar-thumb { background:#dbeafe; border-radius:4px; }
 
   @keyframes fadeUp  { from{opacity:0;transform:translateY(22px)} to{opacity:1;transform:translateY(0)} }
   @keyframes slideUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
@@ -169,6 +148,9 @@ const GLOBAL_CSS = `
   .bottom-tab { display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 0 8px; border:none; background:#fff; cursor:pointer; transition:background .15s; }
   .bottom-tab.active { background:#eff6ff; }
   .bottom-tab:hover { background:#f8faff; }
+  .cal-cell { min-height:76px; padding:6px 5px; border-radius:10px; border:1px solid #f0f4ff; background:#fafbff; transition:background .15s; }
+  .cal-cell:hover { background:#eff6ff; }
+  .cal-cell.today { border:2px solid #4f8cff; background:#eff6ff; }
 `;
 
 // ══════════════════════════════════════════════════════
@@ -203,7 +185,7 @@ function LoginPage({ onLogin }) {
     if (!name.trim())           { setErr("이름을 입력해주세요"); return; }
     if (code.trim().length < 4) { setErr("반 코드는 4자 이상이에요"); return; }
     setBusy(true);
-    setTimeout(() => onLogin({ name: name.trim(), classCode: code.trim().toUpperCase(), grade, cls }), 350);
+    setTimeout(() => onLogin({ name:name.trim(), classCode:code.trim().toUpperCase(), grade, cls }), 350);
   }
 
   return (
@@ -218,7 +200,7 @@ function LoginPage({ onLogin }) {
             세종대성<br/>
             <span style={{ background:"linear-gradient(90deg,#60a5fa,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>클래스</span>
           </h1>
-          <p style={{ color:"#475569", fontSize:13, marginTop:8 }}>우리 반 전용 일정 · 공지 · 급식 · 시간표</p>
+          <p style={{ color:"#475569", fontSize:13, marginTop:8 }}>우리 반 전용 일정 · 공지 · 급식 · 학사일정</p>
         </div>
         <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"28px 24px" }}>
           <div style={{ marginBottom:14 }}>
@@ -229,15 +211,13 @@ function LoginPage({ onLogin }) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
             <div>
               <label style={LOGIN_LBL}>학년</label>
-              <select value={grade} onChange={e=>setGrade(e.target.value)}
-                style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
+              <select value={grade} onChange={e=>setGrade(e.target.value)} style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
                 {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
               </select>
             </div>
             <div>
               <label style={LOGIN_LBL}>반</label>
-              <select value={cls} onChange={e=>setCls(e.target.value)}
-                style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
+              <select value={cls} onChange={e=>setCls(e.target.value)} style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
                 {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
               </select>
             </div>
@@ -300,21 +280,19 @@ function MainApp({ user, page, setPage, onLogout }) {
   const todaySch = schedules.filter(s => s.date === todayStr);
 
   const NAV = [
-    { id:"home",      icon:"🏠", label:"홈" },
-    { id:"schedule",  icon:"📅", label:"일정" },
-    { id:"academic",  icon:"🗓", label:"학사" },
-    { id:"notice",    icon:"📢", label:"공지" },
-    { id:"lunch",     icon:"🍱", label:"급식" },
-    { id:"timetable", icon:"📖", label:"시간표" },
+    { id:"home",     icon:"🏠", label:"홈" },
+    { id:"schedule", icon:"📅", label:"일정" },
+    { id:"academic", icon:"🗓", label:"학사" },
+    { id:"notice",   icon:"📢", label:"공지" },
+    { id:"lunch",    icon:"🍱", label:"급식" },
   ];
 
   const pages = {
-    home:      <HomePage      user={user} schedules={schedules} notices={notices} upcoming={upcoming} todaySch={todaySch} setPage={setPage} loading={loading} />,
-    schedule:  <SchedulePage  user={user} schedules={schedules} setSchedules={setSchedules} showToast={showToast} />,
-    academic:  <AcademicPage />,
-    notice:    <NoticePage    user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
-    lunch:     <LunchPage />,
-    timetable: <TimetablePage user={user} />,
+    home:     <HomePage     user={user} schedules={schedules} notices={notices} upcoming={upcoming} todaySch={todaySch} setPage={setPage} loading={loading} />,
+    schedule: <SchedulePage user={user} schedules={schedules} setSchedules={setSchedules} showToast={showToast} />,
+    academic: <AcademicPage />,
+    notice:   <NoticePage   user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
+    lunch:    <LunchPage />,
   };
 
   return (
@@ -332,7 +310,7 @@ function MainApp({ user, page, setPage, onLogout }) {
             <div style={{ fontSize:15, fontWeight:900, color:"#1e293b", letterSpacing:-.5 }}>세종대성 클래스</div>
             <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>{user.classCode} · {user.grade}학년 {user.cls}반</div>
           </div>
-          <nav style={{ flex:1, padding:"12px 12px", overflowY:"auto" }}>
+          <nav style={{ flex:1, padding:"12px", overflowY:"auto" }}>
             {NAV.map(n => (
               <button key={n.id} className={`side-nav-btn${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
                 <span style={{ fontSize:18 }}>{n.icon}</span>{n.label}
@@ -366,12 +344,11 @@ function MainApp({ user, page, setPage, onLogout }) {
             <button onClick={onLogout} style={{ background:"rgba(255,255,255,.15)", border:"none", padding:"6px 12px", borderRadius:20, color:"rgba(255,255,255,.9)", fontSize:12, fontWeight:600, cursor:"pointer" }}>나가기</button>
           </header>
         )}
-
         {!isMobile && (
           <header style={{ background:"#fff", borderBottom:"1px solid #e8eef8", padding:"14px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
             <div>
               <h2 style={{ fontSize:17, fontWeight:900, color:"#1e293b" }}>
-                {{ home:"🏠 홈", schedule:"📅 일정 관리", academic:"🗓 학사일정", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴", timetable:"📖 시간표" }[page]}
+                {{ home:"🏠 홈", schedule:"📅 일정 관리", academic:"🗓 학사일정", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴" }[page]}
               </h2>
               <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>
                 {new Date().toLocaleDateString("ko-KR",{ year:"numeric", month:"long", day:"numeric", weekday:"long" })}
@@ -395,10 +372,10 @@ function MainApp({ user, page, setPage, onLogout }) {
         </main>
 
         {isMobile && (
-          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(6,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
+          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(5,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
             {NAV.map(n => (
               <button key={n.id} className={`bottom-tab${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize:18 }}>{n.icon}</span>
+                <span style={{ fontSize:20 }}>{n.icon}</span>
                 <span style={{ fontSize:9, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
               </button>
             ))}
@@ -416,7 +393,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
   const { isMobile } = useBreakpoint();
   const now      = new Date();
   const dayNames = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
-  const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0, 4);
+  const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0,4);
 
   return (
     <div style={{ width:"100%" }}>
@@ -479,7 +456,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        {urgentSchedules.map((s, i) => {
+        {urgentSchedules.map((s,i) => {
           const dd   = getDday(s.date);
           const meta = TYPE_META[s.type] || TYPE_META["기타"];
           return (
@@ -532,7 +509,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
   return (
     <div style={{ width:"100%" }}>
       <PageHeader title="일정 관리" sub="수행평가·시험·행사를 등록해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 일정 추가"}
         </button>
       } />
@@ -602,88 +579,168 @@ function SchedCard({ s, user, onDel, past }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 학사일정 (NEIS)
+// 학사일정 달력
 // ══════════════════════════════════════════════════════
 function AcademicPage() {
   const { isMobile } = useBreakpoint();
-  const [events,  setEvents]  = useState([]);
+  const today        = new Date();
+  const [year,  setYear]  = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [events, setEvents]   = useState([]);
   const [loading, setLoading] = useState(true);
-  const todayDash = getTodayDash();
+  const [selected, setSelected] = useState(null); // 선택된 날짜
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const data = await fetchSchoolSchedule();
+      const data = await fetchMonthSchedule(year, month);
       setEvents(data);
       setLoading(false);
     })();
-  }, []);
+  }, [year, month]);
 
-  const upcoming = events.filter(e => e.date >= todayDash);
-  const past     = events.filter(e => e.date < todayDash);
-  const dayKr    = ["일","월","화","수","목","금","토"];
+  function prevMonth() {
+    if (month === 1) { setYear(y => y-1); setMonth(12); }
+    else setMonth(m => m-1);
+    setSelected(null);
+  }
+  function nextMonth() {
+    if (month === 12) { setYear(y => y+1); setMonth(1); }
+    else setMonth(m => m+1);
+    setSelected(null);
+  }
 
-  if (loading) return (
-    <div style={{ textAlign:"center", padding:"60px 20px" }}>
-      <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>🗓</div>
-      <div style={{ fontSize:13, color:"#94a3b8", marginTop:12 }}>학사일정 불러오는 중...</div>
-    </div>
-  );
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const firstDay    = new Date(year, month-1, 1).getDay();
+  const cells       = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const todayDash = getTodayDash();
+
+  function getEventsForDay(day) {
+    if (!day) return [];
+    const m   = String(month).padStart(2,"0");
+    const d   = String(day).padStart(2,"0");
+    const str = `${year}-${m}-${d}`;
+    return events.filter(e => e.date === str);
+  }
+
+  const selectedDate = selected
+    ? `${year}-${String(month).padStart(2,"0")}-${String(selected).padStart(2,"0")}`
+    : null;
+  const selectedEvents = selectedDate ? events.filter(e => e.date === selectedDate) : [];
 
   return (
-    <div style={{ width:"100%" }}>
-      <PageHeader title="학사일정" sub={`${new Date().getMonth()+1}월 학사일정이에요`} />
+    <div style={{ width:"100%", maxWidth:900, margin:"0 auto" }}>
+      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 280px", gap:20 }}>
 
-      {events.length === 0 ? (
-        <EmptyFull icon="🗓" text="이번 달 학사일정이 없어요" sub="방학 중이거나 일정이 없는 달이에요" />
-      ) : (
-        <>
-          {upcoming.length > 0 && (
-            <section style={{ marginBottom:24 }}>
-              <GroupLabel>다가오는 일정 ({upcoming.length})</GroupLabel>
-              <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
-                {upcoming.map((e, i) => {
-                  const d  = new Date(e.date);
-                  const dd = getDday(e.date);
-                  return (
-                    <div key={i} className="card hover-card" style={{ padding:16, display:"flex", alignItems:"center", gap:14, borderLeft:`3px solid ${dd.urgent ? "#4f8cff" : "#f0f4ff"}` }}>
-                      <div style={{ textAlign:"center", minWidth:40 }}>
-                        <div style={{ fontSize:18, fontWeight:900, color:"#1d4ed8" }}>{d.getDate()}</div>
-                        <div style={{ fontSize:10, color:"#94a3b8", fontWeight:600 }}>{dayKr[d.getDay()]}</div>
-                      </div>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:14, fontWeight:700, color:"#1e293b" }}>{e.title}</div>
-                        <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>{e.date}</div>
-                      </div>
-                      <span style={{ fontSize:12, fontWeight:900, color:dd.color, flexShrink:0 }}>{dd.label}</span>
+        {/* 달력 */}
+        <div className="card" style={{ padding:20 }}>
+          {/* 월 네비 */}
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+            <button onClick={prevMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:16, color:"#4f8cff" }}>‹</button>
+            <div style={{ textAlign:"center" }}>
+              <div style={{ fontSize:17, fontWeight:900, color:"#1e293b" }}>{year}년 {MONTH_KR[month-1]}</div>
+              {loading && <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>불러오는 중...</div>}
+            </div>
+            <button onClick={nextMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:16, color:"#4f8cff" }}>›</button>
+          </div>
+
+          {/* 요일 헤더 */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", marginBottom:4 }}>
+            {DAY_KR.map((d,i) => (
+              <div key={d} style={{ textAlign:"center", fontSize:11, fontWeight:700, padding:"4px 0", color: i===0?"#ef4444":i===6?"#3b82f6":"#94a3b8" }}>{d}</div>
+            ))}
+          </div>
+
+          {/* 날짜 셀 */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:2 }}>
+            {cells.map((day, idx) => {
+              if (!day) return <div key={idx} style={{ minHeight:68 }} />;
+              const dash      = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+              const dayEvents = getEventsForDay(day);
+              const isToday   = dash === todayDash;
+              const isSel     = selected === day;
+              const isSun     = idx % 7 === 0;
+              const isSat     = idx % 7 === 6;
+              return (
+                <div key={idx}
+                  className={`cal-cell${isToday?" today":""}`}
+                  onClick={() => setSelected(isSel ? null : day)}
+                  style={{
+                    cursor:"pointer",
+                    background: isSel ? "#eff6ff" : isToday ? "#eff6ff" : "#fafbff",
+                    border: isSel ? "2px solid #4f8cff" : isToday ? "2px solid #4f8cff" : "1px solid #f0f4ff",
+                  }}
+                >
+                  <div style={{ fontSize:12, fontWeight: isToday ? 800 : 400, textAlign:"right", marginBottom:3, color: isToday ? "#4f8cff" : isSun ? "#ef4444" : isSat ? "#3b82f6" : "#64748b" }}>
+                    {day}
+                  </div>
+                  {dayEvents.slice(0,2).map((e,i) => (
+                    <div key={i} style={{ fontSize:9, padding:"2px 4px", borderRadius:4, marginBottom:1, background:"#dbeafe", color:"#1d4ed8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600 }}>
+                      {e.title}
                     </div>
-                  );
-                })}
+                  ))}
+                  {dayEvents.length > 2 && (
+                    <div style={{ fontSize:9, color:"#94a3b8", textAlign:"right" }}>+{dayEvents.length-2}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 사이드 패널 */}
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+          {/* 선택된 날짜 이벤트 */}
+          {selected && (
+            <div className="card" style={{ padding:18, animation:"popIn .2s ease", borderTop:"3px solid #4f8cff" }}>
+              <div style={{ fontSize:13, fontWeight:800, color:"#1d4ed8", marginBottom:10 }}>
+                {month}월 {selected}일 ({DAY_KR[new Date(year, month-1, selected).getDay()]})
               </div>
-            </section>
+              {selectedEvents.length === 0
+                ? <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"12px 0" }}>학사일정 없음</div>
+                : selectedEvents.map((e,i) => (
+                  <div key={i} style={{ padding:"8px 10px", borderRadius:10, background:"#eff6ff", marginBottom:6 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{e.title}</div>
+                  </div>
+                ))
+              }
+            </div>
           )}
 
-          {past.length > 0 && (
-            <section>
-              <GroupLabel faded>지난 일정</GroupLabel>
-              <div style={{ display:"flex", flexDirection:"column", gap:8, opacity:.5 }}>
-                {past.map((e, i) => {
-                  const d = new Date(e.date);
-                  return (
-                    <div key={i} className="card" style={{ padding:14, display:"flex", alignItems:"center", gap:14 }}>
-                      <div style={{ textAlign:"center", minWidth:40 }}>
-                        <div style={{ fontSize:16, fontWeight:900, color:"#94a3b8" }}>{d.getDate()}</div>
-                        <div style={{ fontSize:10, color:"#cbd5e1", fontWeight:600 }}>{dayKr[d.getDay()]}</div>
-                      </div>
-                      <div style={{ fontSize:13, fontWeight:600, color:"#64748b" }}>{e.title}</div>
+          {/* 이달 전체 일정 목록 */}
+          <div className="card" style={{ padding:18 }}>
+            <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:12 }}>
+              {MONTH_KR[month-1]} 학사일정
+            </div>
+            {loading ? (
+              <div style={{ fontSize:12, color:"#94a3b8", textAlign:"center", padding:"12px 0" }}>불러오는 중...</div>
+            ) : events.length === 0 ? (
+              <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"12px 0" }}>일정 없음</div>
+            ) : (
+              events.map((e,i) => {
+                const d  = new Date(e.date);
+                const dd = getDday(e.date);
+                return (
+                  <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid #f8faff", cursor:"pointer" }}
+                    onClick={() => setSelected(d.getDate())}>
+                    <div style={{ minWidth:32, textAlign:"center" }}>
+                      <div style={{ fontSize:14, fontWeight:900, color:"#4f8cff" }}>{d.getDate()}</div>
+                      <div style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>{DAY_KR[d.getDay()]}</div>
                     </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-        </>
-      )}
+                    <div style={{ flex:1, fontSize:12, fontWeight:600, color:"#1e293b" }}>{e.title}</div>
+                    {dd.label && !dd.past && (
+                      <span style={{ fontSize:10, fontWeight:800, color:dd.color, flexShrink:0 }}>{dd.label}</span>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -725,7 +782,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   return (
     <div style={{ width:"100%" }}>
       <PageHeader title="공지 공유" sub="친구들에게 중요한 내용을 공유해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", boxShadow: showForm ? "none" : "0 4px 16px rgba(79,140,255,.3)", transition:"all .2s" }}>
+        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
           {showForm ? "✕ 닫기" : "+ 공지 작성"}
         </button>
       } />
@@ -773,7 +830,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 급식 (NEIS - 조식/중식/석식)
+// 급식 (조식/중식/석식)
 // ══════════════════════════════════════════════════════
 function LunchPage() {
   const { isMobile } = useBreakpoint();
@@ -781,7 +838,6 @@ function LunchPage() {
   const [loading, setLoading] = useState(true);
   const [selMeal, setSelMeal] = useState("중식");
   const todayDash = getTodayDash();
-  const dayKr     = ["일","월","화","수","목","금","토"];
 
   useEffect(() => {
     (async () => {
@@ -807,21 +863,23 @@ function LunchPage() {
     <div style={{ width:"100%" }}>
       <PageHeader title="급식 메뉴" sub="세종대성고등학교 이번 주 급식이에요" />
 
-      {/* 오늘 급식 */}
+      {/* 오늘 급식 3종 */}
       {Object.keys(todayMeals).length > 0 ? (
         <div style={{ marginBottom:20 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:"#94a3b8", letterSpacing:1.5, marginBottom:12 }}>오늘의 급식</div>
+          <GroupLabel>오늘의 급식</GroupLabel>
           <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)", gap:12 }}>
             {mealTypes.map(type => {
               const meta  = MEAL_META[type];
               const items = todayMeals[type];
               if (!items) return null;
               return (
-                <div key={type} style={{ background:`linear-gradient(135deg,${meta.color}dd,${meta.color}99)`, borderRadius:16, padding:"18px 18px 16px", color:"#fff", boxShadow:`0 8px 24px ${meta.color}44` }}>
-                  <div style={{ fontSize:11, color:"rgba(255,255,255,.75)", fontWeight:700, letterSpacing:1.5, marginBottom:8 }}>{meta.label.toUpperCase()}</div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {items.map((item, i) => (
-                      <span key={i} style={{ background:"rgba(255,255,255,.22)", padding:"5px 10px", borderRadius:20, fontSize:12, fontWeight:600 }}>{item}</span>
+                <div key={type} style={{ background:`linear-gradient(135deg,${meta.color},${meta.color}bb)`, borderRadius:16, padding:"18px", color:"#fff", boxShadow:`0 8px 24px ${meta.color}44` }}>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,.8)", fontWeight:700, letterSpacing:1.5, marginBottom:8 }}>
+                    {meta.icon} {meta.label.toUpperCase()}
+                  </div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                    {items.map((item,i) => (
+                      <span key={i} style={{ background:"rgba(255,255,255,.22)", padding:"4px 9px", borderRadius:20, fontSize:12, fontWeight:600 }}>{item}</span>
                     ))}
                   </div>
                 </div>
@@ -864,13 +922,13 @@ function LunchPage() {
               <div key={date} className="card hover-card" style={{ padding:16, borderLeft:`3px solid ${isToday ? meta.color : "#f0f4ff"}` }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
                   <span className="tag" style={{ background: isToday ? meta.bg : "#f1f5f9", color: isToday ? meta.color : "#64748b" }}>
-                    {date.slice(5).replace("-","/")} ({dayKr[d.getDay()]})
+                    {date.slice(5).replace("-","/")} ({DAY_KR[d.getDay()]})
                   </span>
-                  {isToday && <span style={{ fontSize:11, color: meta.color, fontWeight:700 }}>오늘</span>}
+                  {isToday && <span style={{ fontSize:11, color:meta.color, fontWeight:700 }}>오늘</span>}
                 </div>
                 {items ? (
                   <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-                    {items.map((item, i) => (
+                    {items.map((item,i) => (
                       <span key={i} style={{ fontSize:12, padding:"4px 9px", borderRadius:20, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
                     ))}
                   </div>
@@ -880,99 +938,6 @@ function LunchPage() {
               </div>
             );
           })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════
-// 시간표 (NEIS)
-// ══════════════════════════════════════════════════════
-function TimetablePage({ user }) {
-  const { isMobile } = useBreakpoint();
-  const [timetable, setTimetable] = useState({});
-  const [loading,   setLoading]   = useState(true);
-  const [selGrade,  setSelGrade]  = useState(user.grade || "1");
-  const [selClass,  setSelClass]  = useState(user.cls   || "1");
-
-  const weekDates = getWeekDates();
-  const dayNames  = ["월","화","수","목","금"];
-
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const results = await Promise.all(weekDates.map(d => fetchTimetable(selGrade, selClass, d)));
-      const map = {};
-      weekDates.forEach((d, i) => { map[d] = results[i]; });
-      setTimetable(map);
-      setLoading(false);
-    })();
-  }, [selGrade, selClass]);
-
-  const maxPeriod = Math.max(0, ...Object.values(timetable).flat().map(r => Number(r.period)));
-
-  return (
-    <div style={{ width:"100%" }}>
-      <PageHeader title="시간표" sub="이번 주 시간표예요" />
-
-      <div style={{ display:"flex", gap:10, marginBottom:20 }}>
-        <select value={selGrade} onChange={e=>setSelGrade(e.target.value)} className="input-field" style={{ maxWidth:110 }}>
-          {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
-        </select>
-        <select value={selClass} onChange={e=>setSelClass(e.target.value)} className="input-field" style={{ maxWidth:110 }}>
-          {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
-        </select>
-      </div>
-
-      {loading ? (
-        <div style={{ textAlign:"center", padding:"60px 20px" }}>
-          <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>📖</div>
-          <div style={{ fontSize:13, color:"#94a3b8", marginTop:12 }}>시간표 불러오는 중...</div>
-        </div>
-      ) : maxPeriod === 0 ? (
-        <EmptyFull icon="📖" text="시간표 정보가 없어요" sub="학기 중에 다시 확인해보세요" />
-      ) : (
-        <div className="card" style={{ overflow:"auto" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", fontSize: isMobile ? 12 : 13 }}>
-            <thead>
-              <tr style={{ background:"#f8faff" }}>
-                <th style={{ padding:"10px 8px", color:"#94a3b8", fontWeight:700, fontSize:11, borderBottom:"1px solid #f0f4ff", width:36 }}>교시</th>
-                {weekDates.map((d, i) => {
-                  const isToday = d === getTodayStr();
-                  return (
-                    <th key={d} style={{ padding:"10px 8px", fontWeight:700, fontSize:12, borderBottom:"1px solid #f0f4ff", color: isToday ? "#1d4ed8" : "#475569", background: isToday ? "#eff6ff" : "transparent", minWidth: isMobile ? 56 : 80 }}>
-                      {dayNames[i]}<br/>
-                      <span style={{ fontSize:10, fontWeight:500, color:"#94a3b8" }}>{d.slice(4,6)}/{d.slice(6,8)}</span>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({length: maxPeriod}, (_, i) => i + 1).map(period => (
-                <tr key={period} style={{ borderBottom:"1px solid #f8faff" }}>
-                  <td style={{ padding:"10px 8px", textAlign:"center", fontWeight:700, color:"#94a3b8", fontSize:12 }}>{period}</td>
-                  {weekDates.map(d => {
-                    const isToday = d === getTodayStr();
-                    const lesson  = timetable[d]?.find(r => Number(r.period) === period);
-                    return (
-                      <td key={d} style={{ padding:"10px 8px", textAlign:"center", background: isToday ? "#f8fbff" : "transparent" }}>
-                        {lesson ? (
-                          <div>
-                            <div style={{ fontWeight:700, color:"#1e293b" }}>{lesson.subject}</div>
-                            {lesson.teacher && <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{lesson.teacher}</div>}
-                          </div>
-                        ) : (
-                          <span style={{ color:"#e2e8f0" }}>-</span>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
     </div>
