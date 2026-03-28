@@ -27,7 +27,6 @@ const storage = {
 };
 
 function getTodayDash() { return new Date().toISOString().slice(0,10); }
-function getTodayStr()  { return new Date().toISOString().slice(0,10).replace(/-/g,""); }
 
 function getWeekDates() {
   const today = new Date();
@@ -47,6 +46,11 @@ function getDday(dateStr) {
   if (diff > 0 && diff <= 7) return { label:`D-${diff}`, color:"#f59e0b", urgent:true };
   if (diff > 0) return { label:`D-${diff}`, color:"#94a3b8", urgent:false };
   return { label:`D+${Math.abs(diff)}`, color:"#cbd5e1", urgent:false, past:true };
+}
+
+function isWeekend(dateStr) {
+  const d = new Date(dateStr).getDay();
+  return d === 0 || d === 6;
 }
 
 function useBreakpoint() {
@@ -145,18 +149,19 @@ const GLOBAL_CSS = `
   .bottom-tab.active { background:#eff6ff; }
   .bottom-tab:hover { background:#f8faff; }
 
-  /* 달력 셀 - 균일한 높이와 너비 */
+  /* 달력 - 7열 균일 고정 */
   .cal-grid {
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 3px;
     width: 100%;
+    table-layout: fixed;
   }
   .cal-cell {
-    aspect-ratio: 1 / 1.1;
-    min-height: 70px;
-    padding: 6px 5px;
-    border-radius: 10px;
+    width: 100%;
+    min-height: 72px;
+    padding: 5px 4px;
+    border-radius: 8px;
     border: 1px solid #f0f4ff;
     background: #fafbff;
     transition: background .15s;
@@ -166,8 +171,34 @@ const GLOBAL_CSS = `
   .cal-cell:hover { background: #eff6ff; }
   .cal-cell.today { border: 2px solid #4f8cff !important; background: #eff6ff; }
   .cal-cell.selected { border: 2px solid #4f8cff !important; background: #eff6ff; }
-  .cal-cell.empty { background: transparent; border-color: transparent; cursor: default; }
-  .cal-cell.empty:hover { background: transparent; }
+  .cal-cell.empty {
+    background: transparent !important;
+    border-color: transparent !important;
+    cursor: default;
+  }
+  .cal-cell.weekend-cell {
+    background: #fafafa;
+    border-color: #f5f5f5;
+  }
+  .cal-cell.weekend-cell:hover { background: #f5f5f5; }
+
+  /* 로그인 select 스타일 */
+  .login-select {
+    width: 100%;
+    padding: 13px 16px;
+    background: rgba(255,255,255,0.15) !important;
+    border: 1.5px solid rgba(255,255,255,0.25);
+    border-radius: 12px;
+    color: #f1f5f9 !important;
+    font-size: 14px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .login-select option {
+    background: #1e293b;
+    color: #f1f5f9;
+  }
 `;
 
 // ══════════════════════════════════════════════════════
@@ -220,31 +251,51 @@ function LoginPage({ onLogin }) {
           <p style={{ color:"#475569", fontSize:13, marginTop:8 }}>우리 반 전용 일정 · 공지 · 급식 · 학사일정</p>
         </div>
         <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"28px 24px" }}>
+
+          {/* 이름 */}
           <div style={{ marginBottom:14 }}>
             <label style={LOGIN_LBL}>이름</label>
-            <input value={name} placeholder="홍길동" onChange={e=>{setName(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+            <input value={name} placeholder="홍길동"
+              onChange={e=>{setName(e.target.value);setErr("");}}
+              onKeyDown={e=>e.key==="Enter"&&submit()}
               style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15 }} />
           </div>
+
+          {/* 학년 / 반 - 커스텀 select */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
             <div>
               <label style={LOGIN_LBL}>학년</label>
-              <select value={grade} onChange={e=>setGrade(e.target.value)} style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
-                {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
-              </select>
+              <div style={{ position:"relative" }}>
+                <select value={grade} onChange={e=>setGrade(e.target.value)} className="login-select">
+                  {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
+                </select>
+                <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.6)", fontSize:12 }}>▾</div>
+              </div>
             </div>
             <div>
-              <label style={LOGIN_LBL}>반</label>
-              <select value={cls} onChange={e=>setCls(e.target.value)} style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:14 }}>
-                {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
-              </select>
+              <label style={LOGIN_LBL}>반 (1~10반)</label>
+              <div style={{ position:"relative" }}>
+                <select value={cls} onChange={e=>setCls(e.target.value)} className="login-select">
+                  {Array.from({length:10},(_,i)=>i+1).map(c=>(
+                    <option key={c} value={String(c)}>{c}반</option>
+                  ))}
+                </select>
+                <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.6)", fontSize:12 }}>▾</div>
+              </div>
             </div>
           </div>
+
+          {/* 반 코드 */}
           <div style={{ marginBottom:8 }}>
             <label style={LOGIN_LBL}>반 코드</label>
-            <input value={code} placeholder="예: AB12 (4자 이상)" onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+            <input value={code} placeholder="예: AB12 (4자 이상)"
+              onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}}
+              onKeyDown={e=>e.key==="Enter"&&submit()}
               style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15, letterSpacing:2, fontWeight:700 }} />
           </div>
+
           {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:12 }}>⚠️ {err}</div>}
+
           <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"14px", fontSize:15, fontWeight:800 }}>
             {busy ? "입장 중..." : "입장하기 →"}
           </button>
@@ -257,7 +308,7 @@ function LoginPage({ onLogin }) {
     </div>
   );
 }
-const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:1.2, marginBottom:7 };
+const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.6)", letterSpacing:1.2, marginBottom:7 };
 
 // ══════════════════════════════════════════════════════
 // 메인 앱
@@ -293,10 +344,12 @@ function MainApp({ user, page, setPage, onLogout }) {
   }, [user.classCode]);
 
   const todayStr = getTodayDash();
-  const upcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
-  const todaySch = schedules.filter(s => s.date === todayStr);
+  // 주말 제외한 일정만 홈에 표시
+  const upcoming = schedules
+    .filter(s => s.date >= todayStr && !isWeekend(s.date))
+    .sort((a,b) => a.date.localeCompare(b.date));
+  const todaySch = schedules.filter(s => s.date === todayStr && !isWeekend(s.date));
 
-  // ← '학사' → '학사일정' 으로 변경
   const NAV = [
     { id:"home",     icon:"🏠", label:"홈" },
     { id:"schedule", icon:"📅", label:"일정" },
@@ -321,7 +374,6 @@ function MainApp({ user, page, setPage, onLogout }) {
         </div>
       )}
 
-      {/* 사이드바 */}
       {!isMobile && (
         <aside style={{ width:240, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
           <div style={{ padding:"24px 20px 16px", borderBottom:"1px solid #f0f4ff" }}>
@@ -390,7 +442,6 @@ function MainApp({ user, page, setPage, onLogout }) {
           }
         </main>
 
-        {/* 모바일 하단 탭 - 학사일정은 글자 작게 */}
         {isMobile && (
           <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(5,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
             {NAV.map(n => (
@@ -444,7 +495,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
         <div className="card" style={{ padding:20 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
           {upcoming.length === 0
-            ? <EmptyMini icon="📅" text="다가오는 일정이 없어요" />
+            ? <EmptyMini icon="📅" text="다가오는 평일 일정이 없어요" />
             : upcoming.slice(0,4).map(s => {
               const dd   = getDday(s.date);
               const meta = TYPE_META[s.type] || TYPE_META["기타"];
@@ -494,17 +545,21 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 일정
+// 일정 (주말 제외 필터 옵션)
 // ══════════════════════════════════════════════════════
 function SchedulePage({ user, schedules, setSchedules, showToast }) {
   const { isMobile } = useBreakpoint();
-  const [showForm, setShowForm] = useState(false);
-  const [form,    setForm]     = useState({ title:"", date:"", type:"수행평가" });
-  const [saving,  setSaving]   = useState(false);
+  const [showForm,    setShowForm]    = useState(false);
+  const [hideWeekend, setHideWeekend] = useState(true);
+  const [form,    setForm]   = useState({ title:"", date:"", type:"수행평가" });
+  const [saving,  setSaving] = useState(false);
   const todayStr = getTodayDash();
 
-  const upcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
-  const past     = schedules.filter(s => s.date < todayStr).sort((a,b) => b.date.localeCompare(a.date));
+  const allUpcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
+  const allPast     = schedules.filter(s => s.date < todayStr).sort((a,b) => b.date.localeCompare(a.date));
+
+  const upcoming = hideWeekend ? allUpcoming.filter(s => !isWeekend(s.date)) : allUpcoming;
+  const past     = hideWeekend ? allPast.filter(s => !isWeekend(s.date))     : allPast;
 
   async function add() {
     if (!form.title.trim()) { showToast("⚠️ 제목을 입력해주세요","error"); return; }
@@ -528,11 +583,26 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
 
   return (
     <div style={{ width:"100%" }}>
-      <PageHeader title="일정 관리" sub="수행평가·시험·행사를 등록해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
-          {showForm ? "✕ 닫기" : "+ 일정 추가"}
-        </button>
-      } />
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <h2 style={{ fontSize:19, fontWeight:900, color:"#1e293b" }}>일정 관리</h2>
+          <p style={{ fontSize:12, color:"#94a3b8", marginTop:3 }}>수행평가·시험·행사를 등록해요</p>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          {/* 주말 제외 토글 */}
+          <button onClick={() => setHideWeekend(!hideWeekend)} style={{
+            padding:"7px 13px", border:"none", borderRadius:20, cursor:"pointer", fontSize:11, fontWeight:700,
+            background: hideWeekend ? "#eff6ff" : "#f1f5f9",
+            color: hideWeekend ? "#1d4ed8" : "#94a3b8",
+            transition:"all .15s",
+          }}>
+            {hideWeekend ? "📅 주말 제외" : "📅 주말 포함"}
+          </button>
+          <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
+            {showForm ? "✕ 닫기" : "+ 일정 추가"}
+          </button>
+        </div>
+      </div>
 
       {showForm && (
         <div className="card" style={{ padding:22, marginBottom:20, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
@@ -593,7 +663,7 @@ function SchedCard({ s, user, onDel, past }) {
         </div>
       </div>
       <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
-      <div style={{ fontSize:11, color:"#94a3b8" }}>{s.date.slice(5).replace("-","/")} · {s.authorName}</div>
+      <div style={{ fontSize:11, color:"#94a3b8" }}>{s.date.slice(5).replace("-","/")} · {DAY_KR[new Date(s.date).getDay()]} · {s.authorName}</div>
     </div>
   );
 }
@@ -625,7 +695,7 @@ function AcademicPage() {
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const firstDay    = new Date(year, month-1, 1).getDay();
-  // 항상 6주(42칸)으로 고정 → 달마다 높이 일정
+  // 42칸 고정
   const cells = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)];
   while (cells.length < 42) cells.push(null);
 
@@ -646,7 +716,6 @@ function AcademicPage() {
 
         {/* 달력 */}
         <div className="card" style={{ padding:20 }}>
-          {/* 월 네비 */}
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
             <button onClick={prevMonth} style={{ background:"#f0f4ff", border:"none", width:34, height:34, borderRadius:8, cursor:"pointer", fontSize:18, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</button>
             <div style={{ textAlign:"center" }}>
@@ -656,40 +725,49 @@ function AcademicPage() {
             <button onClick={nextMonth} style={{ background:"#f0f4ff", border:"none", width:34, height:34, borderRadius:8, cursor:"pointer", fontSize:18, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>›</button>
           </div>
 
-          {/* 요일 헤더 */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", marginBottom:4 }}>
+          {/* 요일 헤더 - 7열 균일 */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7, minmax(0, 1fr))", marginBottom:4 }}>
             {DAY_KR.map((d,i) => (
-              <div key={d} style={{ textAlign:"center", fontSize:11, fontWeight:700, padding:"4px 0", color: i===0?"#ef4444":i===6?"#3b82f6":"#94a3b8" }}>{d}</div>
+              <div key={d} style={{
+                textAlign:"center", fontSize:11, fontWeight:700, padding:"4px 0",
+                color: i===0 ? "#ef4444" : i===6 ? "#3b82f6" : "#94a3b8",
+              }}>{d}</div>
             ))}
           </div>
 
-          {/* 날짜 그리드 - 항상 42칸 고정 */}
+          {/* 날짜 그리드 - 42칸 고정, 7열 균일 */}
           <div className="cal-grid">
             {cells.map((day, idx) => {
+              const colIdx    = idx % 7;
+              const isSun     = colIdx === 0;
+              const isSat     = colIdx === 6;
+              const isWeekendCell = isSun || isSat;
+
               if (!day) return <div key={idx} className="cal-cell empty" />;
-              const dash      = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
-              const dayEvts   = eventsForDay(day);
-              const isToday   = dash === todayDash;
-              const isSel     = selected === day;
-              const isSun     = idx % 7 === 0;
-              const isSat     = idx % 7 === 6;
+
+              const dash    = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+              const dayEvts = eventsForDay(day);
+              const isToday = dash === todayDash;
+              const isSel   = selected === day;
+
               return (
                 <div
                   key={idx}
-                  className={`cal-cell${isToday?" today":""}${isSel?" selected":""}`}
+                  className={`cal-cell${isWeekendCell?" weekend-cell":""}${isToday?" today":""}${isSel?" selected":""}`}
                   onClick={() => setSelected(isSel ? null : day)}
                 >
                   <div style={{
                     fontSize:12, fontWeight: isToday ? 800 : 400,
-                    textAlign:"right", marginBottom:3,
+                    textAlign:"right", marginBottom:2,
                     color: isToday ? "#4f8cff" : isSun ? "#ef4444" : isSat ? "#3b82f6" : "#64748b",
                   }}>
                     {day}
                   </div>
                   {dayEvts.slice(0,2).map((e,i) => (
                     <div key={i} style={{
-                      fontSize:9, padding:"2px 4px", borderRadius:4, marginBottom:1,
-                      background:"#dbeafe", color:"#1d4ed8",
+                      fontSize:9, padding:"2px 3px", borderRadius:3, marginBottom:1,
+                      background: isWeekendCell ? "#e0e7ff" : "#dbeafe",
+                      color: isWeekendCell ? "#6366f1" : "#1d4ed8",
                       whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600,
                     }}>
                       {e.title}
@@ -706,8 +784,6 @@ function AcademicPage() {
 
         {/* 사이드 패널 */}
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-
-          {/* 선택된 날짜 */}
           {selected && (
             <div className="card" style={{ padding:18, animation:"popIn .2s ease", borderTop:"3px solid #4f8cff" }}>
               <div style={{ fontSize:13, fontWeight:800, color:"#1d4ed8", marginBottom:10 }}>
@@ -724,11 +800,8 @@ function AcademicPage() {
             </div>
           )}
 
-          {/* 이달 목록 */}
           <div className="card" style={{ padding:18, flex:1, overflowY:"auto", maxHeight: isMobile ? "none" : 480 }}>
-            <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:12 }}>
-              {MONTH_KR[month-1]} 학사일정
-            </div>
+            <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:12 }}>{MONTH_KR[month-1]} 학사일정</div>
             {loading ? (
               <div style={{ fontSize:12, color:"#94a3b8", textAlign:"center", padding:"16px 0" }}>불러오는 중...</div>
             ) : events.length === 0 ? (
@@ -742,13 +815,11 @@ function AcademicPage() {
                     onClick={() => setSelected(d.getDate())}
                     style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 6px", borderRadius:8, marginBottom:2, cursor:"pointer", background: selected===d.getDate() ? "#eff6ff" : "transparent", transition:"background .15s" }}>
                     <div style={{ minWidth:32, textAlign:"center", flexShrink:0 }}>
-                      <div style={{ fontSize:15, fontWeight:900, color:"#4f8cff", lineHeight:1 }}>{d.getDate()}</div>
+                      <div style={{ fontSize:15, fontWeight:900, color: d.getDay()===0?"#ef4444": d.getDay()===6?"#3b82f6":"#4f8cff", lineHeight:1 }}>{d.getDate()}</div>
                       <div style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>{DAY_KR[d.getDay()]}</div>
                     </div>
                     <div style={{ flex:1, fontSize:12, fontWeight:600, color:"#1e293b", lineHeight:1.4 }}>{e.title}</div>
-                    {!dd.past && (
-                      <span style={{ fontSize:10, fontWeight:800, color:dd.color, flexShrink:0 }}>{dd.label}</span>
-                    )}
+                    {!dd.past && <span style={{ fontSize:10, fontWeight:800, color:dd.color, flexShrink:0 }}>{dd.label}</span>}
                   </div>
                 );
               })
