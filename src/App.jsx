@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  collection, addDoc, getDocs, deleteDoc,
-  doc, query, where, orderBy, serverTimestamp,
+  collection, addDoc, getDocs, deleteDoc, setDoc,
+  doc, getDoc, query, where, orderBy, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "./services/firebase";
 
+// ── 상수 ──────────────────────────────────────────────
 const SCHEDULE_TYPES = ["수행평가", "시험", "행사", "과제", "기타"];
 const TYPE_META = {
   수행평가: { color: "#f59e0b", bg: "#fef9ec", icon: "✏️" },
@@ -54,14 +55,17 @@ function isWeekend(dateStr) {
 }
 
 function useBreakpoint() {
-  const [isMobile, setIsMobile] = useState(false);
+  const [w, setW] = useState(window.innerWidth);
   useEffect(() => {
-    function check() { setIsMobile(window.innerWidth < 768); }
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
+    const h = () => setW(window.innerWidth);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
   }, []);
-  return { isMobile };
+  return {
+    isMobile:  w < 640,
+    isTablet:  w >= 640 && w < 1024,
+    isDesktop: w >= 1024,
+  };
 }
 
 function parseMenu(raw) {
@@ -110,6 +114,43 @@ async function fetchMonthSchedule(year, month) {
   } catch { return []; }
 }
 
+// ── Firebase 반 코드 검증 ──────────────────────────────
+// classes/{grade}-{cls} 문서에 code 필드 저장
+// 처음 만든 코드가 정답이 됨
+async function verifyOrCreateClass(grade, cls, code) {
+  const classId  = `${grade}-${cls}`;
+  const classRef = doc(db, "classes", classId);
+  const snap     = await getDoc(classRef);
+
+  if (!snap.exists()) {
+    // 처음 만드는 경우 → 이 코드가 정답으로 저장됨
+    await setDoc(classRef, { code, createdAt: serverTimestamp() });
+    return { ok: true, isNew: true };
+  }
+
+  const savedCode = snap.data().code;
+  if (savedCode !== code) {
+    return { ok: false, isNew: false, savedCode };
+  }
+  return { ok: true, isNew: false };
+}
+
+// 반 멤버 등록/조회
+async function registerMember(classCode, grade, cls, name) {
+  const memberId  = `${classCode}_${name}`;
+  const memberRef = doc(db, "members", memberId);
+  await setDoc(memberRef, {
+    name, grade, cls, classCode,
+    joinedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+async function fetchMembers(classCode) {
+  const q    = query(collection(db,"members"), where("classCode","==",classCode));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => d.data()).sort((a,b) => a.name.localeCompare(b.name, "ko"));
+}
+
 // ══════════════════════════════════════════════════════
 // CSS
 // ══════════════════════════════════════════════════════
@@ -131,74 +172,39 @@ const GLOBAL_CSS = `
   @keyframes float   { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
   @keyframes pulse   { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.85;transform:scale(1.04)} }
   @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(12px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+  @keyframes spin    { to{transform:rotate(360deg)} }
 
-  .card { background:#fff; border-radius:18px; border:1px solid #e8eef8; box-shadow:0 2px 16px rgba(79,140,255,.06); }
+  .card { background:#fff; border-radius:16px; border:1px solid #e8eef8; box-shadow:0 2px 12px rgba(79,140,255,.06); }
   .hover-card { transition:transform .18s,box-shadow .18s; cursor:pointer; }
-  .hover-card:hover { transform:translateY(-3px); box-shadow:0 10px 32px rgba(79,140,255,.13); }
-  .tag { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; }
-  .input-field { width:100%; padding:13px 16px; background:#f8faff; border:1.5px solid #e8eef8; border-radius:12px; font-size:14px; color:#1e293b; transition:border-color .2s,box-shadow .2s; }
-  .input-field:focus { border-color:#4f8cff; box-shadow:0 0 0 4px rgba(79,140,255,.1); background:#fff; }
-  .btn-primary { padding:13px 24px; border:none; border-radius:12px; background:linear-gradient(135deg,#4f8cff,#7c3aed); color:#fff; font-size:14px; font-weight:700; cursor:pointer; box-shadow:0 4px 18px rgba(79,140,255,.3); transition:transform .15s,box-shadow .15s,opacity .15s; }
-  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 8px 24px rgba(79,140,255,.38); }
+  .hover-card:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(79,140,255,.12); }
+  .tag { display:inline-flex; align-items:center; gap:4px; padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; }
+  .input-field { width:100%; padding:12px 14px; background:#f8faff; border:1.5px solid #e8eef8; border-radius:10px; font-size:14px; color:#1e293b; transition:border-color .2s,box-shadow .2s; }
+  .input-field:focus { border-color:#4f8cff; box-shadow:0 0 0 3px rgba(79,140,255,.1); background:#fff; }
+  .btn-primary { padding:12px 20px; border:none; border-radius:10px; background:linear-gradient(135deg,#4f8cff,#7c3aed); color:#fff; font-size:14px; font-weight:700; cursor:pointer; box-shadow:0 4px 14px rgba(79,140,255,.3); transition:transform .15s,box-shadow .15s,opacity .15s; }
+  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(79,140,255,.35); }
   .btn-primary:active { transform:scale(.97); }
   .btn-primary:disabled { opacity:.65; cursor:not-allowed; transform:none; }
-  .side-nav-btn { width:100%; padding:11px 14px; border-radius:12px; border:none; display:flex; align-items:center; gap:10px; font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; text-align:left; margin-bottom:3px; background:transparent; color:#64748b; }
+  .side-nav-btn { width:100%; padding:10px 14px; border-radius:10px; border:none; display:flex; align-items:center; gap:10px; font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; text-align:left; margin-bottom:2px; background:transparent; color:#64748b; }
   .side-nav-btn.active { background:#eff6ff; color:#1d4ed8; font-weight:700; }
   .side-nav-btn:hover:not(.active) { background:#f8faff; color:#1e293b; }
-  .bottom-tab { display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 0 6px; border:none; background:#fff; cursor:pointer; transition:background .15s; }
+  .bottom-tab { display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 0 6px; border:none; background:#fff; cursor:pointer; transition:background .15s; flex:1; }
   .bottom-tab.active { background:#eff6ff; }
   .bottom-tab:hover { background:#f8faff; }
+  .login-select { width:100%; padding:12px 14px; background:rgba(255,255,255,.15); border:1.5px solid rgba(255,255,255,.25); border-radius:10px; color:#f1f5f9; font-size:14px; cursor:pointer; appearance:none; -webkit-appearance:none; }
+  .login-select option { background:#1e293b; color:#f1f5f9; }
+  .cal-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; width:100%; }
+  .cal-cell { width:100%; min-height:68px; padding:5px 4px; border-radius:8px; border:1px solid #f0f4ff; background:#fafbff; transition:background .15s; cursor:pointer; overflow:hidden; }
+  .cal-cell:hover { background:#eff6ff; }
+  .cal-cell.today { border:2px solid #4f8cff !important; background:#eff6ff; }
+  .cal-cell.selected { border:2px solid #4f8cff !important; background:#eff6ff; }
+  .cal-cell.empty { background:transparent !important; border-color:transparent !important; cursor:default; }
+  .cal-cell.weekend-cell { background:#fafafa; border-color:#f5f5f5; }
+  .cal-cell.weekend-cell:hover { background:#f5f5f5; }
 
-  /* 달력 - 7열 균일 고정 */
-  .cal-grid {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 3px;
-    width: 100%;
-    table-layout: fixed;
-  }
-  .cal-cell {
-    width: 100%;
-    min-height: 72px;
-    padding: 5px 4px;
-    border-radius: 8px;
-    border: 1px solid #f0f4ff;
-    background: #fafbff;
-    transition: background .15s;
-    cursor: pointer;
-    overflow: hidden;
-  }
-  .cal-cell:hover { background: #eff6ff; }
-  .cal-cell.today { border: 2px solid #4f8cff !important; background: #eff6ff; }
-  .cal-cell.selected { border: 2px solid #4f8cff !important; background: #eff6ff; }
-  .cal-cell.empty {
-    background: transparent !important;
-    border-color: transparent !important;
-    cursor: default;
-  }
-  .cal-cell.weekend-cell {
-    background: #fafafa;
-    border-color: #f5f5f5;
-  }
-  .cal-cell.weekend-cell:hover { background: #f5f5f5; }
-
-  /* 로그인 select 스타일 */
-  .login-select {
-    width: 100%;
-    padding: 13px 16px;
-    background: rgba(255,255,255,0.15) !important;
-    border: 1.5px solid rgba(255,255,255,0.25);
-    border-radius: 12px;
-    color: #f1f5f9 !important;
-    font-size: 14px;
-    cursor: pointer;
-    appearance: none;
-    -webkit-appearance: none;
-  }
-  .login-select option {
-    background: #1e293b;
-    color: #f1f5f9;
-  }
+  /* 반응형 패딩 */
+  .page-padding { padding: 16px; }
+  @media(min-width:640px)  { .page-padding { padding: 20px 24px; } }
+  @media(min-width:1024px) { .page-padding { padding: 24px 32px; } }
 `;
 
 // ══════════════════════════════════════════════════════
@@ -229,92 +235,114 @@ function LoginPage({ onLogin }) {
   const [err,   setErr]   = useState("");
   const [busy,  setBusy]  = useState(false);
 
-  function submit() {
+  async function submit() {
     if (!name.trim())           { setErr("이름을 입력해주세요"); return; }
     if (code.trim().length < 4) { setErr("반 코드는 4자 이상이에요"); return; }
     setBusy(true);
-    setTimeout(() => onLogin({ name:name.trim(), classCode:code.trim().toUpperCase(), grade, cls }), 350);
+    try {
+      const result = await verifyOrCreateClass(grade, cls, code.trim().toUpperCase());
+      if (!result.ok) {
+        setErr(`${grade}학년 ${cls}반 코드가 틀렸어요. 반 친구에게 코드를 받아요!`);
+        setBusy(false);
+        return;
+      }
+      const classCode = code.trim().toUpperCase();
+      await registerMember(classCode, grade, cls, name.trim());
+      onLogin({ name:name.trim(), classCode, grade, cls, isNew: result.isNew });
+    } catch(e) {
+      console.error(e);
+      setErr("오류가 발생했어요. 다시 시도해줘요.");
+      setBusy(false);
+    }
   }
 
   return (
-    <div style={{ width:"100%", minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0a0f1e", padding:24, position:"relative", overflow:"hidden" }}>
+    <div style={{ width:"100%", minHeight:"100dvh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0a0f1e", padding:20, position:"relative", overflow:"hidden" }}>
       {[[220,"#4f8cff","12%","8%",3.8],[160,"#7c3aed","78%","72%",4.5],[260,"#06b6d4","68%","12%",5.2],[110,"#f59e0b","22%","78%",3.2]].map(([sz,cl,top,left,dur],i) => (
         <div key={i} style={{ position:"absolute", width:sz, height:sz, borderRadius:"50%", background:cl, opacity:.07, top, left, filter:"blur(70px)", animation:`pulse ${dur}s ease-in-out infinite`, animationDelay:`${i*.6}s`, pointerEvents:"none" }} />
       ))}
-      <div style={{ width:"100%", maxWidth:420, position:"relative", zIndex:1, animation:"fadeUp .5s ease" }}>
-        <div style={{ textAlign:"center", marginBottom:32 }}>
-          <div style={{ fontSize:56, display:"inline-block", marginBottom:12, animation:"float 3.5s ease-in-out infinite" }}>🏫</div>
-          <h1 style={{ fontSize:28, fontWeight:900, color:"#fff", letterSpacing:-1, lineHeight:1.15 }}>
+      <div style={{ width:"100%", maxWidth:400, position:"relative", zIndex:1, animation:"fadeUp .5s ease" }}>
+        <div style={{ textAlign:"center", marginBottom:28 }}>
+          <div style={{ fontSize:52, display:"inline-block", marginBottom:10, animation:"float 3.5s ease-in-out infinite" }}>🏫</div>
+          <h1 style={{ fontSize:26, fontWeight:900, color:"#fff", letterSpacing:-1, lineHeight:1.15 }}>
             세종대성<br/>
             <span style={{ background:"linear-gradient(90deg,#60a5fa,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>클래스</span>
           </h1>
-          <p style={{ color:"#475569", fontSize:13, marginTop:8 }}>우리 반 전용 일정 · 공지 · 급식 · 학사일정</p>
+          <p style={{ color:"#475569", fontSize:12, marginTop:6 }}>우리 반 전용 일정 · 공지 · 급식 · 학사일정</p>
         </div>
-        <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:24, padding:"28px 24px" }}>
+        <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:20, padding:"24px 20px" }}>
 
-          {/* 이름 */}
-          <div style={{ marginBottom:14 }}>
+          <div style={{ marginBottom:12 }}>
             <label style={LOGIN_LBL}>이름</label>
             <input value={name} placeholder="홍길동"
               onChange={e=>{setName(e.target.value);setErr("");}}
               onKeyDown={e=>e.key==="Enter"&&submit()}
-              style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15 }} />
+              style={{ width:"100%", padding:"12px 14px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:10, color:"#f1f5f9", fontSize:14 }} />
           </div>
 
-          {/* 학년 / 반 - 커스텀 select */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
             <div>
               <label style={LOGIN_LBL}>학년</label>
               <div style={{ position:"relative" }}>
                 <select value={grade} onChange={e=>setGrade(e.target.value)} className="login-select">
                   {["1","2","3"].map(g=><option key={g} value={g}>{g}학년</option>)}
                 </select>
-                <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.6)", fontSize:12 }}>▾</div>
+                <div style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.5)", fontSize:11 }}>▾</div>
               </div>
             </div>
             <div>
-              <label style={LOGIN_LBL}>반 (1~10반)</label>
+              <label style={LOGIN_LBL}>반</label>
               <div style={{ position:"relative" }}>
                 <select value={cls} onChange={e=>setCls(e.target.value)} className="login-select">
                   {Array.from({length:10},(_,i)=>i+1).map(c=>(
                     <option key={c} value={String(c)}>{c}반</option>
                   ))}
                 </select>
-                <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.6)", fontSize:12 }}>▾</div>
+                <div style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.5)", fontSize:11 }}>▾</div>
               </div>
             </div>
           </div>
 
-          {/* 반 코드 */}
           <div style={{ marginBottom:8 }}>
             <label style={LOGIN_LBL}>반 코드</label>
-            <input value={code} placeholder="예: AB12 (4자 이상)"
+            <input value={code} placeholder="4자 이상 (처음이면 새로 만들어짐)"
               onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}}
               onKeyDown={e=>e.key==="Enter"&&submit()}
-              style={{ width:"100%", padding:"13px 16px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:12, color:"#f1f5f9", fontSize:15, letterSpacing:2, fontWeight:700 }} />
+              style={{ width:"100%", padding:"12px 14px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:10, color:"#f1f5f9", fontSize:14, letterSpacing:2, fontWeight:700 }} />
+            <p style={{ fontSize:10, color:"rgba(255,255,255,.35)", marginTop:5, lineHeight:1.5 }}>
+              💡 처음 입력한 코드가 우리 반 코드가 됩니다. 친구들에게 공유하세요!
+            </p>
           </div>
 
-          {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:10, padding:"9px 13px", marginBottom:12 }}>⚠️ {err}</div>}
+          {err && (
+            <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:8, padding:"9px 12px", marginBottom:12, lineHeight:1.5 }}>
+              ⚠️ {err}
+            </div>
+          )}
 
-          <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"14px", fontSize:15, fontWeight:800 }}>
-            {busy ? "입장 중..." : "입장하기 →"}
+          <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"13px", fontSize:14, fontWeight:800 }}>
+            {busy ? (
+              <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                <span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,.3)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin .7s linear infinite", display:"inline-block" }} />
+                확인 중...
+              </span>
+            ) : "입장하기 →"}
           </button>
-          <p style={{ textAlign:"center", fontSize:11, color:"#475569", marginTop:12, lineHeight:1.8 }}>
-            💡 같은 코드를 쓰면 같은 반으로 묶여요<br/>
-            <span style={{ color:"#60a5fa", fontWeight:700 }}>DEMO</span> 코드로 체험해볼 수 있어요
-          </p>
         </div>
       </div>
     </div>
   );
 }
-const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.6)", letterSpacing:1.2, marginBottom:7 };
+const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.55)", letterSpacing:1, marginBottom:6 };
 
 // ══════════════════════════════════════════════════════
 // 메인 앱
 // ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
-  const { isMobile } = useBreakpoint();
+  const { isMobile, isTablet, isDesktop } = useBreakpoint();
+  const showSidebar = isDesktop;
+  const showBottomNav = !isDesktop;
+
   const [schedules, setSchedules] = useState([]);
   const [notices,   setNotices]   = useState([]);
   const [loading,   setLoading]   = useState(true);
@@ -344,10 +372,7 @@ function MainApp({ user, page, setPage, onLogout }) {
   }, [user.classCode]);
 
   const todayStr = getTodayDash();
-  // 주말 제외한 일정만 홈에 표시
-  const upcoming = schedules
-    .filter(s => s.date >= todayStr && !isWeekend(s.date))
-    .sort((a,b) => a.date.localeCompare(b.date));
+  const upcoming = schedules.filter(s => s.date >= todayStr && !isWeekend(s.date)).sort((a,b) => a.date.localeCompare(b.date));
   const todaySch = schedules.filter(s => s.date === todayStr && !isWeekend(s.date));
 
   const NAV = [
@@ -356,6 +381,7 @@ function MainApp({ user, page, setPage, onLogout }) {
     { id:"academic", icon:"🗓", label:"학사일정" },
     { id:"notice",   icon:"📢", label:"공지" },
     { id:"lunch",    icon:"🍱", label:"급식" },
+    { id:"members",  icon:"👥", label:"반 인원" },
   ];
 
   const pages = {
@@ -364,39 +390,41 @@ function MainApp({ user, page, setPage, onLogout }) {
     academic: <AcademicPage />,
     notice:   <NoticePage   user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
     lunch:    <LunchPage />,
+    members:  <MembersPage  user={user} />,
   };
 
   return (
     <div style={{ width:"100%", height:"100vh", display:"flex", background:"#f0f4ff", overflow:"hidden" }}>
       {toast && (
-        <div style={{ position:"fixed", bottom: isMobile ? 88 : 24, left:"50%", transform:"translateX(-50%)", background: toast.type==="error" ? "#ef4444" : "#1e293b", color:"#fff", padding:"11px 22px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
+        <div style={{ position:"fixed", bottom: showBottomNav ? 72 : 20, left:"50%", transform:"translateX(-50%)", background: toast.type==="error" ? "#ef4444" : "#1e293b", color:"#fff", padding:"10px 20px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
           {toast.msg}
         </div>
       )}
 
-      {!isMobile && (
-        <aside style={{ width:240, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 20px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
-          <div style={{ padding:"24px 20px 16px", borderBottom:"1px solid #f0f4ff" }}>
-            <div style={{ fontSize:28, marginBottom:8 }}>🏫</div>
-            <div style={{ fontSize:15, fontWeight:900, color:"#1e293b", letterSpacing:-.5 }}>세종대성 클래스</div>
-            <div style={{ fontSize:11, color:"#94a3b8", marginTop:3 }}>{user.classCode} · {user.grade}학년 {user.cls}반</div>
+      {/* 사이드바 (데스크탑만) */}
+      {showSidebar && (
+        <aside style={{ width:240, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 16px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
+          <div style={{ padding:"22px 18px 14px", borderBottom:"1px solid #f0f4ff" }}>
+            <div style={{ fontSize:26, marginBottom:6 }}>🏫</div>
+            <div style={{ fontSize:14, fontWeight:900, color:"#1e293b" }}>세종대성 클래스</div>
+            <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>{user.classCode} · {user.grade}학년 {user.cls}반</div>
           </div>
-          <nav style={{ flex:1, padding:"12px", overflowY:"auto" }}>
+          <nav style={{ flex:1, padding:"10px 10px", overflowY:"auto" }}>
             {NAV.map(n => (
               <button key={n.id} className={`side-nav-btn${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize:18 }}>{n.icon}</span>{n.label}
+                <span style={{ fontSize:17 }}>{n.icon}</span>{n.label}
               </button>
             ))}
           </nav>
-          <div style={{ padding:"14px", borderTop:"1px solid #f0f4ff" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-              <div style={{ width:36, height:36, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:14, flexShrink:0 }}>{user.name[0]}</div>
+          <div style={{ padding:"12px", borderTop:"1px solid #f0f4ff" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:9 }}>
+              <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13, flexShrink:0 }}>{user.name[0]}</div>
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
                 <div style={{ fontSize:11, color:"#94a3b8" }}>{user.grade}학년 {user.cls}반</div>
               </div>
             </div>
-            <button onClick={onLogout} style={{ width:"100%", padding:"8px", borderRadius:10, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
+            <button onClick={onLogout} style={{ width:"100%", padding:"8px", borderRadius:8, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:12, fontWeight:600, cursor:"pointer", transition:"all .15s" }}
               onMouseEnter={e=>{e.currentTarget.style.background="#fff1f1";e.currentTarget.style.color="#ef4444";e.currentTarget.style.borderColor="#fecaca";}}
               onMouseLeave={e=>{e.currentTarget.style.background="#f8faff";e.currentTarget.style.color="#94a3b8";e.currentTarget.style.borderColor="#e8eef8";}}>
               로그아웃
@@ -405,49 +433,60 @@ function MainApp({ user, page, setPage, onLogout }) {
         </aside>
       )}
 
+      {/* 콘텐츠 영역 */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
-        {isMobile && (
-          <header style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5)", padding:"12px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", boxShadow:"0 4px 20px rgba(29,78,216,.28)", flexShrink:0 }}>
-            <div>
-              <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", letterSpacing:2, fontWeight:700 }}>{user.grade}학년 {user.cls}반 · {user.classCode}</div>
-              <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>안녕하세요, {user.name}님 👋</div>
-            </div>
-            <button onClick={onLogout} style={{ background:"rgba(255,255,255,.15)", border:"none", padding:"6px 12px", borderRadius:20, color:"rgba(255,255,255,.9)", fontSize:12, fontWeight:600, cursor:"pointer" }}>나가기</button>
-          </header>
-        )}
-        {!isMobile && (
-          <header style={{ background:"#fff", borderBottom:"1px solid #e8eef8", padding:"14px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
-            <div>
-              <h2 style={{ fontSize:17, fontWeight:900, color:"#1e293b" }}>
-                {{ home:"🏠 홈", schedule:"📅 일정 관리", academic:"🗓 학사일정", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴" }[page]}
-              </h2>
-              <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>
-                {new Date().toLocaleDateString("ko-KR",{ year:"numeric", month:"long", day:"numeric", weekday:"long" })}
-              </div>
-            </div>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13 }}>{user.name[0]}</div>
-              <div>
-                <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
-                <div style={{ fontSize:11, color:"#94a3b8" }}>{user.grade}학년 {user.cls}반</div>
-              </div>
-            </div>
-          </header>
-        )}
 
-        <main style={{ flex:1, overflowY:"auto", padding: isMobile ? "18px 16px" : "24px 32px", paddingBottom: isMobile ? 80 : 28 }}>
+        {/* 상단 헤더 */}
+        <header style={{
+          background: showSidebar ? "#fff" : "linear-gradient(135deg,#1d4ed8,#4f46e5)",
+          borderBottom: showSidebar ? "1px solid #e8eef8" : "none",
+          padding: showSidebar ? "12px 28px" : "11px 18px",
+          display:"flex", alignItems:"center", justifyContent:"space-between",
+          boxShadow: showSidebar ? "none" : "0 3px 14px rgba(29,78,216,.25)",
+          flexShrink:0,
+        }}>
+          {showSidebar ? (
+            <>
+              <div>
+                <h2 style={{ fontSize:16, fontWeight:900, color:"#1e293b" }}>
+                  {{ home:"🏠 홈", schedule:"📅 일정 관리", academic:"🗓 학사일정", notice:"📢 공지 공유", lunch:"🍱 급식 메뉴", members:"👥 반 인원" }[page]}
+                </h2>
+                <div style={{ fontSize:11, color:"#94a3b8", marginTop:1 }}>
+                  {new Date().toLocaleDateString("ko-KR",{ year:"numeric", month:"long", day:"numeric", weekday:"long" })}
+                </div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <div style={{ width:32, height:32, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:12 }}>{user.name[0]}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div style={{ fontSize:10, color:"rgba(255,255,255,.55)", letterSpacing:1.5, fontWeight:700 }}>{user.grade}학년 {user.cls}반 · {user.classCode}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:"#fff" }}>안녕하세요, {user.name}님 👋</div>
+              </div>
+              <button onClick={onLogout} style={{ background:"rgba(255,255,255,.15)", border:"none", padding:"6px 11px", borderRadius:18, color:"rgba(255,255,255,.9)", fontSize:11, fontWeight:600, cursor:"pointer" }}>나가기</button>
+            </>
+          )}
+        </header>
+
+        {/* 페이지 */}
+        <main style={{ flex:1, overflowY:"auto", paddingBottom: showBottomNav ? 68 : 0 }}
+          className="page-padding">
           {loading
-            ? <div style={{ textAlign:"center", padding:"80px 20px" }}><div style={{ fontSize:40, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:14, color:"#94a3b8", marginTop:14, fontWeight:600 }}>불러오는 중...</div></div>
+            ? <div style={{ textAlign:"center", padding:"70px 20px" }}><div style={{ fontSize:38, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:13, color:"#94a3b8", marginTop:12, fontWeight:600 }}>불러오는 중...</div></div>
             : <div key={page} style={{ animation:"slideUp .3s ease" }}>{pages[page]}</div>
           }
         </main>
 
-        {isMobile && (
-          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"grid", gridTemplateColumns:"repeat(5,1fr)", boxShadow:"0 -4px 20px rgba(0,0,0,.07)", zIndex:100 }}>
+        {/* 하단 탭 (모바일+태블릿) */}
+        {showBottomNav && (
+          <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"flex", boxShadow:"0 -3px 14px rgba(0,0,0,.06)", zIndex:100 }}>
             {NAV.map(n => (
               <button key={n.id} className={`bottom-tab${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize:20 }}>{n.icon}</span>
-                <span style={{ fontSize: n.label.length > 3 ? 8 : 9, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
+                <span style={{ fontSize: isMobile ? 19 : 21 }}>{n.icon}</span>
+                <span style={{ fontSize: isMobile ? (n.label.length > 3 ? 7 : 8) : 9, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
               </button>
             ))}
           </nav>
@@ -461,38 +500,38 @@ function MainApp({ user, page, setPage, onLogout }) {
 // 홈
 // ══════════════════════════════════════════════════════
 function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
-  const { isMobile } = useBreakpoint();
+  const { isMobile, isDesktop } = useBreakpoint();
   const now      = new Date();
   const dayNames = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
   const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0,4);
 
   return (
-    <div style={{ width:"100%" }}>
-      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:20, padding: isMobile ? "20px" : "26px 30px", marginBottom:20, color:"#fff", boxShadow:"0 12px 40px rgba(29,78,216,.28)", position:"relative", overflow:"hidden" }}>
-        <div style={{ position:"absolute", right:-30, top:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
+    <div style={{ width:"100%", maxWidth:960, margin:"0 auto" }}>
+      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:18, padding: isMobile ? "18px" : "24px 28px", marginBottom:18, color:"#fff", boxShadow:"0 10px 32px rgba(29,78,216,.25)", position:"relative", overflow:"hidden" }}>
+        <div style={{ position:"absolute", right:-20, top:-20, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
         <div style={{ position:"relative" }}>
-          <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:700, letterSpacing:2, marginBottom:4 }}>TODAY</div>
-          <div style={{ fontSize: isMobile ? 20 : 24, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 12 : 0 }}>
+          <div style={{ fontSize:10, color:"rgba(255,255,255,.55)", fontWeight:700, letterSpacing:2, marginBottom:3 }}>TODAY</div>
+          <div style={{ fontSize: isMobile ? 19 : 22, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 10 : 0 }}>
             {now.getMonth()+1}월 {now.getDate()}일 {dayNames[now.getDay()]}
           </div>
           {todaySch.length > 0
             ? todaySch.map(s => {
               const meta = TYPE_META[s.type] || TYPE_META["기타"];
               return (
-                <div key={s.id} style={{ background:"rgba(255,255,255,.15)", backdropFilter:"blur(10px)", borderRadius:10, padding:"9px 13px", display:"flex", alignItems:"center", gap:10, marginTop:7 }}>
-                  <span style={{ fontSize:15 }}>{meta.icon}</span>
+                <div key={s.id} style={{ background:"rgba(255,255,255,.14)", backdropFilter:"blur(10px)", borderRadius:9, padding:"8px 12px", display:"flex", alignItems:"center", gap:9, marginTop:6 }}>
+                  <span style={{ fontSize:14 }}>{meta.icon}</span>
                   <span style={{ fontSize:13, fontWeight:600, flex:1 }}>{s.title}</span>
-                  <span className="tag" style={{ background:"rgba(255,255,255,.2)", color:"#fff" }}>{s.type}</span>
+                  <span className="tag" style={{ background:"rgba(255,255,255,.18)", color:"#fff" }}>{s.type}</span>
                 </div>
               );
             })
-            : <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:5 }}>오늘 등록된 일정이 없어요 😌</div>
+            : <div style={{ fontSize:12, color:"rgba(255,255,255,.45)", marginTop:4 }}>오늘 등록된 일정이 없어요 😌</div>
           }
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:16 }}>
-        <div className="card" style={{ padding:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:14 }}>
+        <div className="card" style={{ padding:18 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
           {upcoming.length === 0
             ? <EmptyMini icon="📅" text="다가오는 평일 일정이 없어요" />
@@ -500,8 +539,8 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
               const dd   = getDday(s.date);
               const meta = TYPE_META[s.type] || TYPE_META["기타"];
               return (
-                <div key={s.id} style={{ display:"flex", alignItems:"center", gap:11, padding:"9px 0", borderBottom:"1px solid #f8faff" }}>
-                  <div style={{ width:36, height:36, borderRadius:9, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>{meta.icon}</div>
+                <div key={s.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid #f8faff" }}>
+                  <div style={{ width:34, height:34, borderRadius:8, background:meta.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 }}>{meta.icon}</div>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.title}</div>
                     <div style={{ fontSize:11, color:"#94a3b8", marginTop:1 }}>{s.date.slice(5).replace("-","/")} · {s.authorName}</div>
@@ -513,15 +552,15 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           }
         </div>
 
-        <div className="card" style={{ padding:20 }}>
+        <div className="card" style={{ padding:18 }}>
           <SectionHeader title="📢 최근 공지" onMore={() => setPage("notice")} />
           {notices.length === 0
             ? <EmptyMini icon="📢" text="공지가 없어요" />
             : notices.slice(0,3).map(n => (
-              <div key={n.id} style={{ padding:"9px 0", borderBottom:"1px solid #f8faff" }}>
+              <div key={n.id} style={{ padding:"8px 0", borderBottom:"1px solid #f8faff" }}>
                 <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:2 }}>{n.title}</div>
                 <div style={{ fontSize:12, color:"#64748b", lineHeight:1.5, overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>{n.content}</div>
-                <div style={{ fontSize:10, color:"#cbd5e1", marginTop:4 }}>{n.authorName}</div>
+                <div style={{ fontSize:10, color:"#cbd5e1", marginTop:3 }}>{n.authorName}</div>
               </div>
             ))
           }
@@ -531,11 +570,11 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
           const dd   = getDday(s.date);
           const meta = TYPE_META[s.type] || TYPE_META["기타"];
           return (
-            <div key={s.id} className="card hover-card" onClick={() => setPage("schedule")} style={{ padding:20, borderLeft:`4px solid ${meta.color}`, animation:`popIn .35s ease ${i*.08}s both` }}>
-              <span className="tag" style={{ background:meta.bg, color:meta.color, marginBottom:10 }}>{meta.icon} {s.type}</span>
-              <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
-              <div style={{ fontSize:11, color:"#94a3b8", marginBottom:12 }}>{s.date}</div>
-              <div style={{ fontSize:32, fontWeight:900, color:dd.color, letterSpacing:-1 }}>{dd.label}</div>
+            <div key={s.id} className="card hover-card" onClick={() => setPage("schedule")} style={{ padding:18, borderLeft:`3px solid ${meta.color}`, animation:`popIn .3s ease ${i*.08}s both` }}>
+              <span className="tag" style={{ background:meta.bg, color:meta.color, marginBottom:8 }}>{meta.icon} {s.type}</span>
+              <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:2 }}>{s.title}</div>
+              <div style={{ fontSize:11, color:"#94a3b8", marginBottom:10 }}>{s.date}</div>
+              <div style={{ fontSize:30, fontWeight:900, color:dd.color, letterSpacing:-1 }}>{dd.label}</div>
             </div>
           );
         })}
@@ -545,19 +584,18 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 일정 (주말 제외 필터 옵션)
+// 일정
 // ══════════════════════════════════════════════════════
 function SchedulePage({ user, schedules, setSchedules, showToast }) {
-  const { isMobile } = useBreakpoint();
+  const { isMobile, isDesktop } = useBreakpoint();
   const [showForm,    setShowForm]    = useState(false);
   const [hideWeekend, setHideWeekend] = useState(true);
-  const [form,    setForm]   = useState({ title:"", date:"", type:"수행평가" });
-  const [saving,  setSaving] = useState(false);
+  const [form,   setForm]   = useState({ title:"", date:"", type:"수행평가" });
+  const [saving, setSaving] = useState(false);
   const todayStr = getTodayDash();
 
   const allUpcoming = schedules.filter(s => s.date >= todayStr).sort((a,b) => a.date.localeCompare(b.date));
   const allPast     = schedules.filter(s => s.date < todayStr).sort((a,b) => b.date.localeCompare(a.date));
-
   const upcoming = hideWeekend ? allUpcoming.filter(s => !isWeekend(s.date)) : allUpcoming;
   const past     = hideWeekend ? allPast.filter(s => !isWeekend(s.date))     : allPast;
 
@@ -582,31 +620,25 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
   }
 
   return (
-    <div style={{ width:"100%" }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+    <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18, flexWrap:"wrap", gap:8 }}>
         <div>
-          <h2 style={{ fontSize:19, fontWeight:900, color:"#1e293b" }}>일정 관리</h2>
-          <p style={{ fontSize:12, color:"#94a3b8", marginTop:3 }}>수행평가·시험·행사를 등록해요</p>
+          <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>일정 관리</h2>
+          <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>수행평가·시험·행사를 등록해요</p>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          {/* 주말 제외 토글 */}
-          <button onClick={() => setHideWeekend(!hideWeekend)} style={{
-            padding:"7px 13px", border:"none", borderRadius:20, cursor:"pointer", fontSize:11, fontWeight:700,
-            background: hideWeekend ? "#eff6ff" : "#f1f5f9",
-            color: hideWeekend ? "#1d4ed8" : "#94a3b8",
-            transition:"all .15s",
-          }}>
-            {hideWeekend ? "📅 주말 제외" : "📅 주말 포함"}
+          <button onClick={() => setHideWeekend(!hideWeekend)} style={{ padding:"6px 12px", border:"none", borderRadius:18, cursor:"pointer", fontSize:11, fontWeight:700, background: hideWeekend ? "#eff6ff" : "#f1f5f9", color: hideWeekend ? "#1d4ed8" : "#94a3b8", transition:"all .15s" }}>
+            {hideWeekend ? "주말 제외 ✓" : "주말 포함"}
           </button>
-          <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
-            {showForm ? "✕ 닫기" : "+ 일정 추가"}
+          <button onClick={() => setShowForm(!showForm)} style={{ padding:"8px 16px", border:"none", borderRadius:10, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
+            {showForm ? "✕ 닫기" : "+ 추가"}
           </button>
         </div>
       </div>
 
       {showForm && (
-        <div className="card" style={{ padding:22, marginBottom:20, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr 1fr", gap:12, marginBottom:14 }}>
+        <div className="card" style={{ padding:20, marginBottom:18, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr 1fr", gap:10, marginBottom:12 }}>
             <div>
               <label style={LBL}>제목</label>
               <input className="input-field" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="예: 영어 수행평가" />
@@ -627,9 +659,9 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       )}
 
       {upcoming.length > 0 && (
-        <section style={{ marginBottom:24 }}>
+        <section style={{ marginBottom:22 }}>
           <GroupLabel>다가오는 일정 ({upcoming.length})</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:11 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:10 }}>
             {upcoming.map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} />)}
           </div>
         </section>
@@ -637,7 +669,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       {past.length > 0 && (
         <section>
           <GroupLabel faded>지난 일정</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:9, opacity:.5 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:8, opacity:.5 }}>
             {past.slice(0,6).map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} past />)}
           </div>
         </section>
@@ -651,18 +683,18 @@ function SchedCard({ s, user, onDel, past }) {
   const dd   = getDday(s.date);
   const meta = TYPE_META[s.type] || TYPE_META["기타"];
   return (
-    <div className="card hover-card" style={{ padding:16, borderLeft:`3px solid ${dd.urgent&&!past ? meta.color : "#f0f4ff"}` }}>
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:8 }}>
+    <div className="card hover-card" style={{ padding:14, borderLeft:`3px solid ${dd.urgent&&!past ? meta.color : "#f0f4ff"}` }}>
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:7 }}>
         <span className="tag" style={{ background:meta.bg, color:meta.color }}>{meta.icon} {s.type}</span>
-        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:7 }}>
           {!past && <span style={{ fontSize:12, fontWeight:900, color:dd.color }}>{dd.label}</span>}
           {s.authorName === user.name && (
-            <button onClick={()=>onDel(s.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:14, cursor:"pointer", padding:2, lineHeight:1, transition:"color .15s" }}
+            <button onClick={()=>onDel(s.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:13, cursor:"pointer", padding:2, lineHeight:1, transition:"color .15s" }}
               onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
           )}
         </div>
       </div>
-      <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:3 }}>{s.title}</div>
+      <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", marginBottom:2 }}>{s.title}</div>
       <div style={{ fontSize:11, color:"#94a3b8" }}>{s.date.slice(5).replace("-","/")} · {DAY_KR[new Date(s.date).getDay()]} · {s.authorName}</div>
     </div>
   );
@@ -672,7 +704,7 @@ function SchedCard({ s, user, onDel, past }) {
 // 학사일정 달력
 // ══════════════════════════════════════════════════════
 function AcademicPage() {
-  const { isMobile } = useBreakpoint();
+  const { isMobile, isDesktop } = useBreakpoint();
   const today   = new Date();
   const [year,  setYear]    = useState(today.getFullYear());
   const [month, setMonth]   = useState(today.getMonth() + 1);
@@ -695,7 +727,6 @@ function AcademicPage() {
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const firstDay    = new Date(year, month-1, 1).getDay();
-  // 42칸 고정
   const cells = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)];
   while (cells.length < 42) cells.push(null);
 
@@ -712,70 +743,46 @@ function AcademicPage() {
 
   return (
     <div style={{ width:"100%", maxWidth:960, margin:"0 auto" }}>
-      <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 260px", gap:20 }}>
-
-        {/* 달력 */}
-        <div className="card" style={{ padding:20 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-            <button onClick={prevMonth} style={{ background:"#f0f4ff", border:"none", width:34, height:34, borderRadius:8, cursor:"pointer", fontSize:18, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</button>
+      <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 260px" : "1fr", gap:18 }}>
+        <div className="card" style={{ padding:18 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <button onClick={prevMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:17, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</button>
             <div style={{ textAlign:"center" }}>
-              <div style={{ fontSize:17, fontWeight:900, color:"#1e293b" }}>{year}년 {MONTH_KR[month-1]}</div>
-              {loading && <div style={{ fontSize:10, color:"#94a3b8", marginTop:1 }}>불러오는 중...</div>}
+              <div style={{ fontSize:16, fontWeight:900, color:"#1e293b" }}>{year}년 {MONTH_KR[month-1]}</div>
+              {loading && <div style={{ fontSize:10, color:"#94a3b8" }}>불러오는 중...</div>}
             </div>
-            <button onClick={nextMonth} style={{ background:"#f0f4ff", border:"none", width:34, height:34, borderRadius:8, cursor:"pointer", fontSize:18, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>›</button>
+            <button onClick={nextMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:17, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>›</button>
           </div>
 
-          {/* 요일 헤더 - 7열 균일 */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7, minmax(0, 1fr))", marginBottom:4 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginBottom:4 }}>
             {DAY_KR.map((d,i) => (
-              <div key={d} style={{
-                textAlign:"center", fontSize:11, fontWeight:700, padding:"4px 0",
-                color: i===0 ? "#ef4444" : i===6 ? "#3b82f6" : "#94a3b8",
-              }}>{d}</div>
+              <div key={d} style={{ textAlign:"center", fontSize:11, fontWeight:700, padding:"3px 0", color: i===0?"#ef4444":i===6?"#3b82f6":"#94a3b8" }}>{d}</div>
             ))}
           </div>
 
-          {/* 날짜 그리드 - 42칸 고정, 7열 균일 */}
           <div className="cal-grid">
             {cells.map((day, idx) => {
-              const colIdx    = idx % 7;
-              const isSun     = colIdx === 0;
-              const isSat     = colIdx === 6;
-              const isWeekendCell = isSun || isSat;
-
+              const colIdx  = idx % 7;
+              const isSun   = colIdx === 0;
+              const isSat   = colIdx === 6;
+              const isWknd  = isSun || isSat;
               if (!day) return <div key={idx} className="cal-cell empty" />;
-
               const dash    = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
               const dayEvts = eventsForDay(day);
               const isToday = dash === todayDash;
               const isSel   = selected === day;
-
               return (
-                <div
-                  key={idx}
-                  className={`cal-cell${isWeekendCell?" weekend-cell":""}${isToday?" today":""}${isSel?" selected":""}`}
-                  onClick={() => setSelected(isSel ? null : day)}
-                >
-                  <div style={{
-                    fontSize:12, fontWeight: isToday ? 800 : 400,
-                    textAlign:"right", marginBottom:2,
-                    color: isToday ? "#4f8cff" : isSun ? "#ef4444" : isSat ? "#3b82f6" : "#64748b",
-                  }}>
+                <div key={idx} className={`cal-cell${isWknd?" weekend-cell":""}${isToday?" today":""}${isSel?" selected":""}`}
+                  onClick={() => setSelected(isSel ? null : day)}>
+                  <div style={{ fontSize:11, fontWeight: isToday?800:400, textAlign:"right", marginBottom:2, color: isToday?"#4f8cff":isSun?"#ef4444":isSat?"#3b82f6":"#64748b" }}>
                     {day}
                   </div>
-                  {dayEvts.slice(0,2).map((e,i) => (
-                    <div key={i} style={{
-                      fontSize:9, padding:"2px 3px", borderRadius:3, marginBottom:1,
-                      background: isWeekendCell ? "#e0e7ff" : "#dbeafe",
-                      color: isWeekendCell ? "#6366f1" : "#1d4ed8",
-                      whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600,
-                    }}>
+                  {dayEvts.slice(0,isMobile?1:2).map((e,i) => (
+                    <div key={i} style={{ fontSize:8, padding:"2px 3px", borderRadius:3, marginBottom:1, background: isWknd?"#e0e7ff":"#dbeafe", color: isWknd?"#6366f1":"#1d4ed8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600 }}>
                       {e.title}
                     </div>
                   ))}
-                  {dayEvts.length > 2 && (
-                    <div style={{ fontSize:9, color:"#94a3b8", textAlign:"right" }}>+{dayEvts.length-2}</div>
-                  )}
+                  {dayEvts.length > (isMobile?1:2) && <div style={{ fontSize:8, color:"#94a3b8", textAlign:"right" }}>+{dayEvts.length-(isMobile?1:2)}</div>}
                 </div>
               );
             })}
@@ -783,47 +790,43 @@ function AcademicPage() {
         </div>
 
         {/* 사이드 패널 */}
-        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
           {selected && (
-            <div className="card" style={{ padding:18, animation:"popIn .2s ease", borderTop:"3px solid #4f8cff" }}>
-              <div style={{ fontSize:13, fontWeight:800, color:"#1d4ed8", marginBottom:10 }}>
+            <div className="card" style={{ padding:16, animation:"popIn .2s ease", borderTop:"3px solid #4f8cff" }}>
+              <div style={{ fontSize:13, fontWeight:800, color:"#1d4ed8", marginBottom:8 }}>
                 {month}월 {selected}일 ({DAY_KR[new Date(year,month-1,selected).getDay()]})
               </div>
               {selectedEvents.length === 0
-                ? <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"12px 0" }}>학사일정 없음</div>
+                ? <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"10px 0" }}>학사일정 없음</div>
                 : selectedEvents.map((e,i) => (
-                  <div key={i} style={{ padding:"8px 10px", borderRadius:10, background:"#eff6ff", marginBottom:6 }}>
+                  <div key={i} style={{ padding:"7px 9px", borderRadius:8, background:"#eff6ff", marginBottom:5 }}>
                     <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{e.title}</div>
                   </div>
                 ))
               }
             </div>
           )}
-
-          <div className="card" style={{ padding:18, flex:1, overflowY:"auto", maxHeight: isMobile ? "none" : 480 }}>
-            <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:12 }}>{MONTH_KR[month-1]} 학사일정</div>
+          <div className="card" style={{ padding:16, flex:1, overflowY:"auto", maxHeight: isDesktop ? 460 : 300 }}>
+            <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:10 }}>{MONTH_KR[month-1]} 학사일정</div>
             {loading ? (
-              <div style={{ fontSize:12, color:"#94a3b8", textAlign:"center", padding:"16px 0" }}>불러오는 중...</div>
+              <div style={{ fontSize:12, color:"#94a3b8", textAlign:"center", padding:"14px 0" }}>불러오는 중...</div>
             ) : events.length === 0 ? (
-              <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"16px 0" }}>이달 학사일정 없음</div>
-            ) : (
-              events.map((e,i) => {
-                const d  = new Date(e.date);
-                const dd = getDday(e.date);
-                return (
-                  <div key={i}
-                    onClick={() => setSelected(d.getDate())}
-                    style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 6px", borderRadius:8, marginBottom:2, cursor:"pointer", background: selected===d.getDate() ? "#eff6ff" : "transparent", transition:"background .15s" }}>
-                    <div style={{ minWidth:32, textAlign:"center", flexShrink:0 }}>
-                      <div style={{ fontSize:15, fontWeight:900, color: d.getDay()===0?"#ef4444": d.getDay()===6?"#3b82f6":"#4f8cff", lineHeight:1 }}>{d.getDate()}</div>
-                      <div style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>{DAY_KR[d.getDay()]}</div>
-                    </div>
-                    <div style={{ flex:1, fontSize:12, fontWeight:600, color:"#1e293b", lineHeight:1.4 }}>{e.title}</div>
-                    {!dd.past && <span style={{ fontSize:10, fontWeight:800, color:dd.color, flexShrink:0 }}>{dd.label}</span>}
+              <div style={{ fontSize:12, color:"#cbd5e1", textAlign:"center", padding:"14px 0" }}>이달 학사일정 없음</div>
+            ) : events.map((e,i) => {
+              const d  = new Date(e.date);
+              const dd = getDday(e.date);
+              return (
+                <div key={i} onClick={() => setSelected(d.getDate())}
+                  style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 5px", borderRadius:7, marginBottom:2, cursor:"pointer", background: selected===d.getDate()?"#eff6ff":"transparent", transition:"background .15s" }}>
+                  <div style={{ minWidth:28, textAlign:"center", flexShrink:0 }}>
+                    <div style={{ fontSize:14, fontWeight:900, color: d.getDay()===0?"#ef4444":d.getDay()===6?"#3b82f6":"#4f8cff", lineHeight:1 }}>{d.getDate()}</div>
+                    <div style={{ fontSize:9, color:"#94a3b8", fontWeight:600 }}>{DAY_KR[d.getDay()]}</div>
                   </div>
-                );
-              })
-            )}
+                  <div style={{ flex:1, fontSize:12, fontWeight:600, color:"#1e293b", lineHeight:1.4 }}>{e.title}</div>
+                  {!dd.past && <span style={{ fontSize:10, fontWeight:800, color:dd.color, flexShrink:0 }}>{dd.label}</span>}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -835,7 +838,7 @@ function AcademicPage() {
 // 공지
 // ══════════════════════════════════════════════════════
 function NoticePage({ user, notices, setNotices, showToast }) {
-  const { isMobile } = useBreakpoint();
+  const { isDesktop } = useBreakpoint();
   const [showForm, setShowForm] = useState(false);
   const [form,    setForm]     = useState({ title:"", content:"" });
   const [saving,  setSaving]   = useState(false);
@@ -866,20 +869,20 @@ function NoticePage({ user, notices, setNotices, showToast }) {
   }
 
   return (
-    <div style={{ width:"100%" }}>
+    <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
       <PageHeader title="공지 공유" sub="친구들에게 중요한 내용을 공유해요" action={
-        <button onClick={() => setShowForm(!showForm)} style={{ padding:"9px 18px", border:"none", borderRadius:12, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
-          {showForm ? "✕ 닫기" : "+ 공지 작성"}
+        <button onClick={() => setShowForm(!showForm)} style={{ padding:"8px 16px", border:"none", borderRadius:10, background: showForm?"#f1f5f9":"linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm?"#64748b":"#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
+          {showForm ? "✕ 닫기" : "+ 작성"}
         </button>
       } />
 
       {showForm && (
-        <div className="card" style={{ padding:22, marginBottom:20, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
-          <div style={{ marginBottom:12 }}>
+        <div className="card" style={{ padding:20, marginBottom:18, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
+          <div style={{ marginBottom:10 }}>
             <label style={LBL}>제목</label>
             <input className="input-field" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="예: 내일 체육복 지참" />
           </div>
-          <div style={{ marginBottom:14 }}>
+          <div style={{ marginBottom:12 }}>
             <label style={LBL}>내용</label>
             <textarea className="input-field" value={form.content} onChange={e=>setForm({...form,content:e.target.value})} placeholder="자세한 내용을 써주세요" rows={4} style={{ resize:"none", lineHeight:1.7 }} />
           </div>
@@ -890,19 +893,19 @@ function NoticePage({ user, notices, setNotices, showToast }) {
       {notices.length === 0
         ? <EmptyFull icon="📢" text="아직 공지가 없어요" sub="위 버튼으로 친구들에게 알려주세요!" />
         : (
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:13 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:12 }}>
             {notices.map(n => (
-              <div key={n.id} className="card hover-card" style={{ padding:20 }}>
-                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:9 }}>
+              <div key={n.id} className="card hover-card" style={{ padding:18 }}>
+                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:8 }}>
                   <div style={{ fontSize:14, fontWeight:800, color:"#1e293b", flex:1, lineHeight:1.4, paddingRight:8 }}>{n.title}</div>
                   {n.authorName === user.name && (
-                    <button onClick={()=>del(n.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:15, cursor:"pointer", flexShrink:0, lineHeight:1, transition:"color .15s" }}
+                    <button onClick={()=>del(n.id)} style={{ background:"none", border:"none", color:"#e2e8f0", fontSize:14, cursor:"pointer", flexShrink:0, lineHeight:1, transition:"color .15s" }}
                       onMouseEnter={e=>e.currentTarget.style.color="#ef4444"} onMouseLeave={e=>e.currentTarget.style.color="#e2e8f0"}>✕</button>
                   )}
                 </div>
-                <div style={{ fontSize:13, color:"#475569", lineHeight:1.75, marginBottom:12 }}>{n.content}</div>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ width:24, height:24, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:10, fontWeight:900, flexShrink:0 }}>{n.authorName[0]}</div>
+                <div style={{ fontSize:13, color:"#475569", lineHeight:1.75, marginBottom:10 }}>{n.content}</div>
+                <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                  <div style={{ width:22, height:22, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontSize:10, fontWeight:900, flexShrink:0 }}>{n.authorName[0]}</div>
                   <span style={{ fontSize:11, color:"#94a3b8" }}>{n.authorName}</span>
                   <span style={{ fontSize:11, color:"#e2e8f0", marginLeft:"auto" }}>{fmtDate(n.createdAt)}</span>
                 </div>
@@ -919,7 +922,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
 // 급식
 // ══════════════════════════════════════════════════════
 function LunchPage() {
-  const { isMobile } = useBreakpoint();
+  const { isMobile, isDesktop } = useBreakpoint();
   const [mealMap, setMealMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [selMeal, setSelMeal] = useState("중식");
@@ -941,30 +944,28 @@ function LunchPage() {
   if (loading) return (
     <div style={{ textAlign:"center", padding:"60px 20px" }}>
       <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>🍱</div>
-      <div style={{ fontSize:13, color:"#94a3b8", marginTop:12 }}>급식 정보 불러오는 중...</div>
+      <div style={{ fontSize:13, color:"#94a3b8", marginTop:10 }}>급식 정보 불러오는 중...</div>
     </div>
   );
 
   return (
-    <div style={{ width:"100%" }}>
+    <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
       <PageHeader title="급식 메뉴" sub="세종대성고등학교 이번 주 급식이에요" />
 
       {Object.keys(todayMeals).length > 0 ? (
-        <div style={{ marginBottom:20 }}>
+        <div style={{ marginBottom:18 }}>
           <GroupLabel>오늘의 급식</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3,1fr)", gap:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile?"1fr":isDesktop?"repeat(3,1fr)":"repeat(3,1fr)", gap:10 }}>
             {mealTypes.map(type => {
               const meta  = MEAL_META[type];
               const items = todayMeals[type];
               if (!items) return null;
               return (
-                <div key={type} style={{ background:`linear-gradient(135deg,${meta.color},${meta.color}bb)`, borderRadius:16, padding:"18px", color:"#fff", boxShadow:`0 8px 24px ${meta.color}44` }}>
-                  <div style={{ fontSize:11, color:"rgba(255,255,255,.8)", fontWeight:700, letterSpacing:1.5, marginBottom:8 }}>
-                    {meta.icon} {meta.label.toUpperCase()}
-                  </div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                <div key={type} style={{ background:`linear-gradient(135deg,${meta.color},${meta.color}bb)`, borderRadius:14, padding:"16px", color:"#fff", boxShadow:`0 6px 20px ${meta.color}44` }}>
+                  <div style={{ fontSize:10, color:"rgba(255,255,255,.75)", fontWeight:700, letterSpacing:1.2, marginBottom:7 }}>{meta.icon} {meta.label.toUpperCase()}</div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
                     {items.map((item,i) => (
-                      <span key={i} style={{ background:"rgba(255,255,255,.22)", padding:"4px 9px", borderRadius:20, fontSize:12, fontWeight:600 }}>{item}</span>
+                      <span key={i} style={{ background:"rgba(255,255,255,.2)", padding:"3px 8px", borderRadius:20, fontSize:11, fontWeight:600 }}>{item}</span>
                     ))}
                   </div>
                 </div>
@@ -973,19 +974,14 @@ function LunchPage() {
           </div>
         </div>
       ) : (
-        <div className="card" style={{ padding:24, textAlign:"center", color:"#94a3b8", marginBottom:20 }}>오늘은 급식 정보가 없어요 😢</div>
+        <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8", marginBottom:18 }}>오늘은 급식 정보가 없어요 😢</div>
       )}
 
-      <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+      <div style={{ display:"flex", gap:7, marginBottom:14 }}>
         {mealTypes.map(type => {
           const meta = MEAL_META[type];
           return (
-            <button key={type} onClick={() => setSelMeal(type)} style={{
-              padding:"7px 16px", border:"none", borderRadius:20, cursor:"pointer", fontSize:12, fontWeight:700,
-              background: selMeal===type ? meta.color : "#f1f5f9",
-              color: selMeal===type ? "#fff" : "#64748b",
-              transition:"all .15s",
-            }}>
+            <button key={type} onClick={() => setSelMeal(type)} style={{ padding:"6px 14px", border:"none", borderRadius:18, cursor:"pointer", fontSize:12, fontWeight:700, background: selMeal===type?meta.color:"#f1f5f9", color: selMeal===type?"#fff":"#64748b", transition:"all .15s" }}>
               {meta.icon} {type}
             </button>
           );
@@ -993,31 +989,29 @@ function LunchPage() {
       </div>
 
       {menuDays.length === 0 ? (
-        <div className="card" style={{ padding:24, textAlign:"center", color:"#94a3b8" }}>이번 주 급식 정보가 없어요</div>
+        <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8" }}>이번 주 급식 정보가 없어요</div>
       ) : (
-        <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:11 }}>
+        <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:10 }}>
           {menuDays.map(([date, meals]) => {
             const d       = new Date(date);
             const isToday = date === todayDash;
             const items   = meals[selMeal];
             const meta    = MEAL_META[selMeal];
             return (
-              <div key={date} className="card hover-card" style={{ padding:16, borderLeft:`3px solid ${isToday ? meta.color : "#f0f4ff"}` }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-                  <span className="tag" style={{ background: isToday ? meta.bg : "#f1f5f9", color: isToday ? meta.color : "#64748b" }}>
+              <div key={date} className="card hover-card" style={{ padding:14, borderLeft:`3px solid ${isToday?meta.color:"#f0f4ff"}` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:9 }}>
+                  <span className="tag" style={{ background: isToday?meta.bg:"#f1f5f9", color: isToday?meta.color:"#64748b" }}>
                     {date.slice(5).replace("-","/")} ({DAY_KR[d.getDay()]})
                   </span>
                   {isToday && <span style={{ fontSize:11, color:meta.color, fontWeight:700 }}>오늘</span>}
                 </div>
                 {items ? (
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
                     {items.map((item,i) => (
-                      <span key={i} style={{ fontSize:12, padding:"4px 9px", borderRadius:20, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
+                      <span key={i} style={{ fontSize:11, padding:"3px 8px", borderRadius:18, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
                     ))}
                   </div>
-                ) : (
-                  <div style={{ fontSize:12, color:"#cbd5e1" }}>정보 없음</div>
-                )}
+                ) : <div style={{ fontSize:12, color:"#cbd5e1" }}>정보 없음</div>}
               </div>
             );
           })}
@@ -1028,14 +1022,106 @@ function LunchPage() {
 }
 
 // ══════════════════════════════════════════════════════
-// 공통
+// 반 인원 페이지
+// ══════════════════════════════════════════════════════
+function MembersPage({ user }) {
+  const { isDesktop } = useBreakpoint();
+  const [members,  setMembers]  = useState([]);
+  const [loading,  setLoading]  = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const data = await fetchMembers(user.classCode);
+      setMembers(data);
+      setLoading(false);
+    })();
+  }, [user.classCode]);
+
+  const gradeGroups = members.reduce((acc, m) => {
+    const key = `${m.grade}학년 ${m.cls}반`;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(m);
+    return acc;
+  }, {});
+
+  const AVATAR_COLORS = [
+    "linear-gradient(135deg,#4f8cff,#7c3aed)",
+    "linear-gradient(135deg,#10b981,#06b6d4)",
+    "linear-gradient(135deg,#f59e0b,#ef4444)",
+    "linear-gradient(135deg,#8b5cf6,#ec4899)",
+    "linear-gradient(135deg,#3b82f6,#10b981)",
+  ];
+
+  return (
+    <div style={{ width:"100%", maxWidth:720, margin:"0 auto" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+        <div>
+          <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>반 인원</h2>
+          <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>
+            {user.classCode} 반 · 총 {members.length}명
+          </p>
+        </div>
+        <div style={{ padding:"7px 13px", borderRadius:18, background:"#eff6ff", color:"#1d4ed8", fontSize:13, fontWeight:800 }}>
+          {members.length}명
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign:"center", padding:"60px 20px" }}>
+          <div style={{ fontSize:36, animation:"float 1.5s ease-in-out infinite" }}>👥</div>
+          <div style={{ fontSize:13, color:"#94a3b8", marginTop:10 }}>인원 불러오는 중...</div>
+        </div>
+      ) : members.length === 0 ? (
+        <EmptyFull icon="👥" text="아직 아무도 없어요" sub="친구들에게 반 코드를 공유해요!" />
+      ) : (
+        <>
+          {/* 내 정보 카드 */}
+          <div className="card" style={{ padding:16, marginBottom:16, borderLeft:"3px solid #4f8cff", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:42, height:42, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:16, flexShrink:0 }}>
+              {user.name[0]}
+            </div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:14, fontWeight:800, color:"#1e293b" }}>{user.name} <span style={{ fontSize:11, color:"#4f8cff", fontWeight:700 }}>나</span></div>
+              <div style={{ fontSize:11, color:"#94a3b8", marginTop:1 }}>{user.grade}학년 {user.cls}반</div>
+            </div>
+          </div>
+
+          {/* 그룹별 멤버 */}
+          {Object.entries(gradeGroups).sort().map(([groupName, groupMembers]) => (
+            <div key={groupName} style={{ marginBottom:18 }}>
+              <GroupLabel>{groupName} ({groupMembers.length}명)</GroupLabel>
+              <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "repeat(4,1fr)" : "repeat(3,1fr)", gap:10 }}>
+                {groupMembers.map((m, i) => (
+                  <div key={m.name} className="card hover-card" style={{ padding:14, textAlign:"center" }}>
+                    <div style={{ width:44, height:44, borderRadius:"50%", background: AVATAR_COLORS[i % AVATAR_COLORS.length], display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:17, margin:"0 auto 8px" }}>
+                      {m.name[0]}
+                    </div>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>
+                      {m.name}
+                      {m.name === user.name && <span style={{ fontSize:10, color:"#4f8cff", marginLeft:4 }}>나</span>}
+                    </div>
+                    <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{m.grade}학년 {m.cls}반</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════
+// 공통 컴포넌트
 // ══════════════════════════════════════════════════════
 function PageHeader({ title, sub, action }) {
   return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
       <div>
-        <h2 style={{ fontSize:19, fontWeight:900, color:"#1e293b" }}>{title}</h2>
-        {sub && <p style={{ fontSize:12, color:"#94a3b8", marginTop:3 }}>{sub}</p>}
+        <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>{title}</h2>
+        {sub && <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>{sub}</p>}
       </div>
       {action}
     </div>
@@ -1044,7 +1130,7 @@ function PageHeader({ title, sub, action }) {
 
 function SectionHeader({ title, onMore }) {
   return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:13 }}>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:11 }}>
       <div style={{ fontSize:13, fontWeight:800, color:"#1e293b" }}>{title}</div>
       <button onClick={onMore} style={{ background:"none", border:"none", fontSize:12, color:"#94a3b8", fontWeight:600, cursor:"pointer" }}>더보기 →</button>
     </div>
@@ -1052,21 +1138,21 @@ function SectionHeader({ title, onMore }) {
 }
 
 function GroupLabel({ children, faded }) {
-  return <div style={{ fontSize:11, fontWeight:700, color: faded?"#cbd5e1":"#94a3b8", letterSpacing:1.5, marginBottom:11 }}>{children}</div>;
+  return <div style={{ fontSize:11, fontWeight:700, color: faded?"#cbd5e1":"#94a3b8", letterSpacing:1.5, marginBottom:10 }}>{children}</div>;
 }
 
 function EmptyMini({ icon, text }) {
-  return <div style={{ textAlign:"center", padding:"22px 0", color:"#cbd5e1" }}><span style={{ fontSize:26 }}>{icon}</span><div style={{ fontSize:12, fontWeight:600, marginTop:7 }}>{text}</div></div>;
+  return <div style={{ textAlign:"center", padding:"20px 0", color:"#cbd5e1" }}><span style={{ fontSize:24 }}>{icon}</span><div style={{ fontSize:12, fontWeight:600, marginTop:6 }}>{text}</div></div>;
 }
 
 function EmptyFull({ icon, text, sub }) {
   return (
-    <div style={{ textAlign:"center", padding:"64px 20px", color:"#94a3b8" }}>
-      <div style={{ fontSize:46, marginBottom:12 }}>{icon}</div>
-      <div style={{ fontSize:15, fontWeight:700, color:"#64748b", marginBottom:5 }}>{text}</div>
+    <div style={{ textAlign:"center", padding:"60px 20px", color:"#94a3b8" }}>
+      <div style={{ fontSize:44, marginBottom:10 }}>{icon}</div>
+      <div style={{ fontSize:15, fontWeight:700, color:"#64748b", marginBottom:4 }}>{text}</div>
       {sub && <div style={{ fontSize:12 }}>{sub}</div>}
     </div>
   );
 }
 
-const LBL = { display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:.5, marginBottom:7 };
+const LBL = { display:"block", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:.5, marginBottom:6 };
