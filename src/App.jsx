@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   collection, addDoc, getDocs, deleteDoc, setDoc,
   doc, getDoc, query, where, orderBy, serverTimestamp,
-  onSnapshot, updateDoc, Timestamp,
+  onSnapshot, updateDoc, writeBatch, Timestamp,
 } from "firebase/firestore";
 import { db } from "./services/firebase";
 
@@ -20,11 +20,13 @@ const MEAL_META = {
   중식: { icon: "☀️", color: "#10b981", bg: "#d1fae5", label: "중식 (점심)" },
   석식: { icon: "🌙", color: "#6366f1", bg: "#ede9fe", label: "석식 (저녁)" },
 };
-const DAY_KR   = ["일","월","화","수","목","금","토"];
-const MONTH_KR = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
-// 온라인 기준: 마지막 heartbeat 이후 2분
+const DAY_KR    = ["일","월","화","수","목","금","토"];
+const MONTH_KR  = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+const MAX_CLASS = 8; // 1~8반
+const ADMIN_CODE = "20266202";
 const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
 const HEARTBEAT_INTERVAL  = 45 * 1000;
+const INACTIVE_DAYS = 30;
 
 const storage = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
@@ -33,14 +35,23 @@ const storage = {
 
 function getTodayDash() { return new Date().toISOString().slice(0,10); }
 
-function getWeekDates() {
+// 주말이면 다음 주, 평일이면 이번 주 월~금 반환
+function getTargetWeekDates() {
   const today = new Date();
-  const day   = today.getDay();
-  const mon   = new Date(today);
-  mon.setDate(today.getDate() - (day === 0 ? 6 : day - 1));
+  const dow   = today.getDay(); // 0=일, 6=토
+  const isWeekendNow = dow === 0 || dow === 6;
+  const base  = new Date(today);
+  if (isWeekendNow) {
+    // 다음 주 월요일로 이동
+    const daysToNextMon = dow === 0 ? 1 : 2;
+    base.setDate(today.getDate() + daysToNextMon);
+  } else {
+    // 이번 주 월요일로 이동
+    base.setDate(today.getDate() - (dow - 1));
+  }
   return Array.from({length:5}, (_,i) => {
-    const d = new Date(mon);
-    d.setDate(mon.getDate() + i);
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
     return d.toISOString().slice(0,10).replace(/-/g,"");
   });
 }
@@ -91,8 +102,8 @@ async function fetchDayMeals(dateStr) {
   } catch { return {}; }
 }
 
-async function fetchWeekMeals() {
-  const dates   = getWeekDates();
+async function fetchTargetWeekMeals() {
+  const dates   = getTargetWeekDates();
   const results = await Promise.all(dates.map(d => fetchDayMeals(d)));
   const map = {};
   dates.forEach((d,i) => {
@@ -128,36 +139,54 @@ async function verifyOrCreateClass(grade, cls, code) {
     await setDoc(classRef, { code, createdAt: serverTimestamp() });
     return { ok: true, isNew: true };
   }
-  const savedCode = snap.data().code;
-  if (savedCode !== code) return { ok: false };
+  if (snap.data().code !== code) return { ok: false };
   return { ok: true, isNew: false };
 }
 
-// ── 멤버 등록 + 온라인 상태 ──────────────────────────────
+async function changeClassCode(grade, cls, newCode) {
+  const classId  = `${grade}-${cls}`;
+  await updateDoc(doc(db, "classes", classId), { code: newCode });
+}
+
 async function registerMember(classCode, grade, cls, name) {
   const memberId  = `${classCode}_${name}`;
-  const memberRef = doc(db, "members", memberId);
-  await setDoc(memberRef, {
+  await setDoc(doc(db, "members", memberId), {
     name, grade, cls, classCode,
     joinedAt: serverTimestamp(),
     lastSeen: serverTimestamp(),
-    online:   true,
+    online: true,
   }, { merge: true });
   return memberId;
 }
 
 async function heartbeat(memberId) {
-  try {
-    await updateDoc(doc(db, "members", memberId), {
-      lastSeen: serverTimestamp(),
-      online:   true,
-    });
-  } catch {}
+  try { await updateDoc(doc(db,"members",memberId), { lastSeen: serverTimestamp(), online: true }); } catch {}
 }
 
 async function setOffline(memberId) {
+  try { await updateDoc(doc(db,"members",memberId), { online: false }); } catch {}
+}
+
+async function kickMember(memberId) {
+  await deleteDoc(doc(db,"members",memberId));
+}
+
+// 30일 미접속 계정 자동 삭제
+async function cleanupInactiveMembers(classCode) {
   try {
-    await updateDoc(doc(db, "members", memberId), { online: false });
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - INACTIVE_DAYS);
+    const q    = query(collection(db,"members"), where("classCode","==",classCode));
+    const snap = await getDocs(q);
+    const batch = writeBatch(db);
+    let count = 0;
+    snap.docs.forEach(d => {
+      const lastSeen = d.data().lastSeen;
+      if (!lastSeen) return;
+      const ts = lastSeen?.toDate ? lastSeen.toDate() : new Date(lastSeen);
+      if (ts < cutoff) { batch.delete(d.ref); count++; }
+    });
+    if (count > 0) await batch.commit();
   } catch {}
 }
 
@@ -209,7 +238,7 @@ const GLOBAL_CSS = `
   .cal-cell.empty { background:transparent !important; border-color:transparent !important; cursor:default; }
   .cal-cell.weekend-cell { background:#fafafa; border-color:#f5f5f5; }
   .cal-cell.weekend-cell:hover { background:#f5f5f5; }
-  .online-dot { width:9px; height:9px; border-radius:50%; background:#10b981; border:2px solid #fff; animation:blink 2s ease-in-out infinite; }
+  .online-dot  { width:9px; height:9px; border-radius:50%; background:#10b981; border:2px solid #fff; animation:blink 2s ease-in-out infinite; }
   .offline-dot { width:9px; height:9px; border-radius:50%; background:#e2e8f0; border:2px solid #fff; }
   .page-padding { padding:16px; }
   @media(min-width:640px)  { .page-padding { padding:20px 24px; } }
@@ -257,6 +286,8 @@ function LoginPage({ onLogin }) {
       }
       const classCode = code.trim().toUpperCase();
       const memberId  = await registerMember(classCode, grade, cls, name.trim());
+      // 30일 미접속 정리
+      cleanupInactiveMembers(classCode);
       onLogin({ name:name.trim(), classCode, grade, cls, memberId, isNew:result.isNew });
     } catch(e) {
       console.error(e);
@@ -296,10 +327,13 @@ function LoginPage({ onLogin }) {
               </div>
             </div>
             <div>
-              <label style={LOGIN_LBL}>반 (1~10반)</label>
+              {/* 1~8반만 */}
+              <label style={LOGIN_LBL}>반 (1~8반)</label>
               <div style={{ position:"relative" }}>
                 <select value={cls} onChange={e=>setCls(e.target.value)} className="login-select">
-                  {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
+                  {Array.from({length:MAX_CLASS},(_,i)=>i+1).map(c=>(
+                    <option key={c} value={String(c)}>{c}반</option>
+                  ))}
                 </select>
                 <div style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.5)", fontSize:11 }}>▾</div>
               </div>
@@ -307,7 +341,8 @@ function LoginPage({ onLogin }) {
           </div>
           <div style={{ marginBottom:8 }}>
             <label style={LOGIN_LBL}>반 코드</label>
-            <input value={code} placeholder="4자 이상 (처음이면 새 코드 생성)" onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
+            <input value={code} placeholder="4자 이상"
+              onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
               style={{ width:"100%", padding:"12px 14px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:10, color:"#f1f5f9", fontSize:14, letterSpacing:2, fontWeight:700 }} />
             <p style={{ fontSize:10, color:"rgba(255,255,255,.3)", marginTop:4, lineHeight:1.5 }}>💡 처음 입력한 코드가 우리 반 코드가 됩니다</p>
           </div>
@@ -326,7 +361,7 @@ function LoginPage({ onLogin }) {
 const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.55)", letterSpacing:1, marginBottom:6 };
 
 // ══════════════════════════════════════════════════════
-// 메인 앱 (heartbeat 포함)
+// 메인 앱
 // ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
   const { isMobile, isDesktop } = useBreakpoint();
@@ -344,7 +379,6 @@ function MainApp({ user, page, setPage, onLogout }) {
     setTimeout(() => setToast(null), 2800);
   }, []);
 
-  // heartbeat - 45초마다 lastSeen 갱신
   useEffect(() => {
     if (!user.memberId) return;
     heartbeat(user.memberId);
@@ -392,7 +426,7 @@ function MainApp({ user, page, setPage, onLogout }) {
     academic: <AcademicPage />,
     notice:   <NoticePage   user={user} notices={notices} setNotices={setNotices} showToast={showToast} />,
     lunch:    <LunchPage />,
-    members:  <MembersPage  user={user} />,
+    members:  <MembersPage  user={user} showToast={showToast} onLogout={onLogout} />,
   };
 
   return (
@@ -723,7 +757,6 @@ function AcademicPage() {
   const firstDay    = new Date(year, month-1, 1).getDay();
   const cells = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)];
   while (cells.length < 42) cells.push(null);
-
   const todayDash = getTodayDash();
 
   function eventsForDay(day) {
@@ -732,8 +765,9 @@ function AcademicPage() {
     return events.filter(e => e.date === str);
   }
 
-  const selectedDate   = selected ? `${year}-${String(month).padStart(2,"0")}-${String(selected).padStart(2,"0")}` : null;
-  const selectedEvents = selectedDate ? events.filter(e => e.date === selectedDate) : [];
+  const selectedEvents = selected
+    ? events.filter(e => e.date === `${year}-${String(month).padStart(2,"0")}-${String(selected).padStart(2,"0")}`)
+    : [];
 
   return (
     <div style={{ width:"100%", maxWidth:960, margin:"0 auto" }}>
@@ -747,13 +781,11 @@ function AcademicPage() {
             </div>
             <button onClick={nextMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:17, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>›</button>
           </div>
-
           <div style={{ display:"grid", gridTemplateColumns:"repeat(7,minmax(0,1fr))", marginBottom:4 }}>
             {DAY_KR.map((d,i) => (
               <div key={d} style={{ textAlign:"center", fontSize:11, fontWeight:700, padding:"3px 0", color: i===0?"#ef4444":i===6?"#3b82f6":"#94a3b8" }}>{d}</div>
             ))}
           </div>
-
           <div className="cal-grid">
             {cells.map((day, idx) => {
               const colIdx = idx % 7;
@@ -908,7 +940,7 @@ function NoticePage({ user, notices, setNotices, showToast }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 급식
+// 급식 (주말이면 다음 주)
 // ══════════════════════════════════════════════════════
 function LunchPage() {
   const { isMobile, isDesktop } = useBreakpoint();
@@ -916,11 +948,13 @@ function LunchPage() {
   const [loading, setLoading] = useState(true);
   const [selMeal, setSelMeal] = useState("중식");
   const todayDash = getTodayDash();
+  const todayDow  = new Date().getDay();
+  const isWkndNow = todayDow === 0 || todayDow === 6;
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const data = await fetchWeekMeals();
+      const data = await fetchTargetWeekMeals();
       setMealMap(data);
       setLoading(false);
     })();
@@ -939,8 +973,10 @@ function LunchPage() {
 
   return (
     <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
-      <PageHeader title="급식 메뉴" sub="세종대성고등학교 이번 주 급식이에요" />
-      {Object.keys(todayMeals).length > 0 ? (
+      <PageHeader title="급식 메뉴" sub={isWkndNow ? "주말이라 다음 주 급식을 보여드려요 📅" : "세종대성고등학교 이번 주 급식이에요"} />
+
+      {/* 오늘 급식 (평일만) */}
+      {!isWkndNow && Object.keys(todayMeals).length > 0 ? (
         <div style={{ marginBottom:18 }}>
           <GroupLabel>오늘의 급식</GroupLabel>
           <div style={{ display:"grid", gridTemplateColumns: isMobile?"1fr":"repeat(3,1fr)", gap:10 }}>
@@ -959,9 +995,11 @@ function LunchPage() {
             })}
           </div>
         </div>
-      ) : (
+      ) : !isWkndNow && (
         <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8", marginBottom:18 }}>오늘은 급식 정보가 없어요 😢</div>
       )}
+
+      {/* 식사 구분 탭 */}
       <div style={{ display:"flex", gap:7, marginBottom:14 }}>
         {mealTypes.map(type => {
           const meta = MEAL_META[type];
@@ -972,8 +1010,10 @@ function LunchPage() {
           );
         })}
       </div>
+
+      {/* 주간 목록 */}
       {menuDays.length === 0 ? (
-        <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8" }}>이번 주 급식 정보가 없어요</div>
+        <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8" }}>급식 정보가 없어요</div>
       ) : (
         <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:10 }}>
           {menuDays.map(([date, meals]) => {
@@ -1004,30 +1044,58 @@ function LunchPage() {
 }
 
 // ══════════════════════════════════════════════════════
-// 반 인원 - 실시간 onSnapshot
+// 반 인원 (실시간 + 관리자 기능)
 // ══════════════════════════════════════════════════════
-function MembersPage({ user }) {
+function MembersPage({ user, showToast, onLogout }) {
   const { isDesktop } = useBreakpoint();
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [now,     setNow]     = useState(Date.now());
-
-  // 1분마다 now 갱신 → 온라인 상태 자동 재계산
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 60000);
-    return () => clearInterval(t);
-  }, []);
+  const [members,    setMembers]    = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [isAdmin,    setIsAdmin]    = useState(false);
+  const [adminInput, setAdminInput] = useState("");
+  const [showAdmin,  setShowAdmin]  = useState(false);
+  const [newCode,    setNewCode]    = useState("");
+  const [confirmKick, setConfirmKick] = useState(null);
 
   // 실시간 구독
   useEffect(() => {
-    const q    = query(collection(db,"members"), where("classCode","==",user.classCode));
+    const q     = query(collection(db,"members"), where("classCode","==",user.classCode));
     const unsub = onSnapshot(q, snap => {
-      const data = snap.docs.map(d => d.data()).sort((a,b) => a.name.localeCompare(b.name,"ko"));
+      const data = snap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => a.name.localeCompare(b.name,"ko"));
       setMembers(data);
       setLoading(false);
     }, err => { console.error(err); setLoading(false); });
     return () => unsub();
   }, [user.classCode]);
+
+  function tryAdmin() {
+    if (adminInput === ADMIN_CODE) {
+      setIsAdmin(true);
+      setShowAdmin(false);
+      showToast("🔑 관리자 권한이 활성화됐어요!");
+    } else {
+      showToast("❌ 관리자 코드가 틀렸어요","error");
+    }
+    setAdminInput("");
+  }
+
+  async function handleChangeCode() {
+    if (newCode.trim().length < 4) { showToast("⚠️ 4자 이상 입력해주세요","error"); return; }
+    try {
+      await changeClassCode(user.grade, user.cls, newCode.trim().toUpperCase());
+      showToast("✅ 반 코드가 변경됐어요!");
+      setNewCode("");
+    } catch { showToast("❌ 변경 실패","error"); }
+  }
+
+  async function handleKick(member) {
+    try {
+      await kickMember(member.id);
+      showToast(`🚫 ${member.name}님을 강퇴했어요`);
+      setConfirmKick(null);
+      // 자신이 강퇴되면 로그아웃
+      if (member.name === user.name) { storage.set("sjdshs_user", null); onLogout(); }
+    } catch { showToast("❌ 강퇴 실패","error"); }
+  }
 
   const onlineMembers  = members.filter(m => isOnline(m.lastSeen));
   const offlineMembers = members.filter(m => !isOnline(m.lastSeen));
@@ -1042,17 +1110,24 @@ function MembersPage({ user }) {
 
   function MemberCard({ m, i }) {
     const online = isOnline(m.lastSeen);
+    const isMe   = m.name === user.name;
     return (
-      <div className="card hover-card" style={{ padding:14, textAlign:"center", opacity: online?1:.7 }}>
-        <div style={{ position:"relative", width:46, height:46, margin:"0 auto 8px" }}>
-          <div style={{ width:46, height:46, borderRadius:"50%", background: AVATAR_COLORS[i % AVATAR_COLORS.length], display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:18 }}>
+      <div className="card" style={{ padding:14, textAlign:"center", opacity: online?1:.65, position:"relative" }}>
+        {/* 관리자 강퇴 버튼 */}
+        {isAdmin && !isMe && (
+          <button onClick={() => setConfirmKick(m)} style={{ position:"absolute", top:8, right:8, background:"none", border:"none", color:"#e2e8f0", fontSize:13, cursor:"pointer", lineHeight:1, transition:"color .15s" }}
+            onMouseEnter={e=>e.target.style.color="#ef4444"} onMouseLeave={e=>e.target.style.color="#e2e8f0"}>✕</button>
+        )}
+        <div style={{ position:"relative", width:44, height:44, margin:"0 auto 8px" }}>
+          <div style={{ width:44, height:44, borderRadius:"50%", background: AVATAR_COLORS[i % AVATAR_COLORS.length], display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:17 }}>
             {m.name[0]}
           </div>
           <div className={online?"online-dot":"offline-dot"} style={{ position:"absolute", bottom:1, right:1 }} />
         </div>
         <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>
           {m.name}
-          {m.name === user.name && <span style={{ fontSize:10, color:"#4f8cff", marginLeft:3 }}>나</span>}
+          {isMe && <span style={{ fontSize:10, color:"#4f8cff", marginLeft:3 }}>나</span>}
+          {isAdmin && <span style={{ fontSize:9, color:"#f59e0b", marginLeft:3 }}>관리자</span>}
         </div>
         <div style={{ fontSize:10, color: online?"#10b981":"#94a3b8", marginTop:2, fontWeight:600 }}>
           {online ? "🟢 접속 중" : "⚫ 오프라인"}
@@ -1065,20 +1140,67 @@ function MembersPage({ user }) {
   return (
     <div style={{ width:"100%", maxWidth:720, margin:"0 auto" }}>
       {/* 헤더 */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18, flexWrap:"wrap", gap:8 }}>
         <div>
           <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>반 인원</h2>
           <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>{user.classCode} 반 · 총 {members.length}명</p>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <div style={{ padding:"6px 12px", borderRadius:18, background:"#d1fae5", color:"#059669", fontSize:12, fontWeight:800 }}>
             🟢 {onlineMembers.length}명 접속 중
           </div>
-          <div style={{ padding:"6px 12px", borderRadius:18, background:"#f1f5f9", color:"#94a3b8", fontSize:12, fontWeight:700 }}>
-            전체 {members.length}명
-          </div>
+          {!isAdmin && (
+            <button onClick={() => setShowAdmin(!showAdmin)} style={{ padding:"6px 12px", borderRadius:18, border:"1px solid #e8eef8", background:"#f8faff", color:"#94a3b8", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+              🔑 관리자
+            </button>
+          )}
+          {isAdmin && (
+            <div style={{ padding:"6px 12px", borderRadius:18, background:"#fef3c7", color:"#d97706", fontSize:11, fontWeight:700 }}>
+              👑 관리자 모드
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 관리자 코드 입력 */}
+      {showAdmin && !isAdmin && (
+        <div className="card" style={{ padding:16, marginBottom:16, animation:"popIn .2s ease", borderTop:"3px solid #f59e0b" }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#1e293b", marginBottom:10 }}>🔑 관리자 코드 입력</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input className="input-field" type="password" value={adminInput} onChange={e=>setAdminInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryAdmin()} placeholder="관리자 코드 8자리" style={{ flex:1 }} />
+            <button onClick={tryAdmin} className="btn-primary" style={{ padding:"12px 16px" }}>확인</button>
+          </div>
+        </div>
+      )}
+
+      {/* 관리자 패널 */}
+      {isAdmin && (
+        <div className="card" style={{ padding:18, marginBottom:18, borderTop:"3px solid #f59e0b", animation:"popIn .2s ease" }}>
+          <div style={{ fontSize:13, fontWeight:800, color:"#d97706", marginBottom:14 }}>👑 관리자 패널</div>
+          <div style={{ marginBottom:8 }}>
+            <label style={LBL}>반 코드 변경</label>
+            <div style={{ display:"flex", gap:8 }}>
+              <input className="input-field" value={newCode} onChange={e=>setNewCode(e.target.value.toUpperCase())} placeholder="새 코드 (4자 이상)" style={{ flex:1, letterSpacing:2 }} />
+              <button onClick={handleChangeCode} className="btn-primary" style={{ padding:"12px 16px", background:"linear-gradient(135deg,#f59e0b,#ef4444)" }}>변경</button>
+            </div>
+          </div>
+          <p style={{ fontSize:11, color:"#94a3b8", marginTop:6 }}>⚠️ 코드 변경 후 기존 코드로 입장 불가. 친구들에게 새 코드를 알려주세요.</p>
+        </div>
+      )}
+
+      {/* 강퇴 확인 모달 */}
+      {confirmKick && (
+        <div onClick={() => setConfirmKick(null)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999, padding:20 }}>
+          <div onClick={e=>e.stopPropagation()} className="card" style={{ padding:24, maxWidth:320, width:"100%", animation:"popIn .2s ease" }}>
+            <div style={{ fontSize:15, fontWeight:800, color:"#1e293b", marginBottom:8 }}>강퇴 확인</div>
+            <div style={{ fontSize:13, color:"#64748b", marginBottom:20 }}><strong>{confirmKick.name}</strong>님을 강퇴할까요? 이 작업은 되돌릴 수 없어요.</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => handleKick(confirmKick)} style={{ flex:1, padding:"11px", border:"none", borderRadius:10, background:"#ef4444", color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}>강퇴</button>
+              <button onClick={() => setConfirmKick(null)} style={{ flex:1, padding:"11px", border:"1px solid #e8eef8", borderRadius:10, background:"#f8faff", color:"#64748b", fontSize:13, fontWeight:600, cursor:"pointer" }}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ textAlign:"center", padding:"60px 20px" }}>
@@ -1089,22 +1211,19 @@ function MembersPage({ user }) {
         <EmptyFull icon="👥" text="아직 아무도 없어요" sub="친구들에게 반 코드를 공유해요!" />
       ) : (
         <>
-          {/* 접속 중 */}
           {onlineMembers.length > 0 && (
             <section style={{ marginBottom:22 }}>
               <GroupLabel>🟢 접속 중 ({onlineMembers.length})</GroupLabel>
               <div style={{ display:"grid", gridTemplateColumns: isDesktop?"repeat(4,1fr)":"repeat(3,1fr)", gap:10 }}>
-                {onlineMembers.map((m,i) => <MemberCard key={m.name} m={m} i={i} />)}
+                {onlineMembers.map((m,i) => <MemberCard key={m.id} m={m} i={i} />)}
               </div>
             </section>
           )}
-
-          {/* 오프라인 */}
           {offlineMembers.length > 0 && (
             <section>
               <GroupLabel faded>오프라인 ({offlineMembers.length})</GroupLabel>
               <div style={{ display:"grid", gridTemplateColumns: isDesktop?"repeat(4,1fr)":"repeat(3,1fr)", gap:10 }}>
-                {offlineMembers.map((m,i) => <MemberCard key={m.name} m={m} i={onlineMembers.length+i} />)}
+                {offlineMembers.map((m,i) => <MemberCard key={m.id} m={m} i={onlineMembers.length+i} />)}
               </div>
             </section>
           )}
