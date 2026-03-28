@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   collection, addDoc, getDocs, deleteDoc, setDoc,
   doc, getDoc, query, where, orderBy, serverTimestamp,
+  onSnapshot, updateDoc, Timestamp,
 } from "firebase/firestore";
 import { db } from "./services/firebase";
 
@@ -21,6 +22,9 @@ const MEAL_META = {
 };
 const DAY_KR   = ["일","월","화","수","목","금","토"];
 const MONTH_KR = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+// 온라인 기준: 마지막 heartbeat 이후 2분
+const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
+const HEARTBEAT_INTERVAL  = 45 * 1000;
 
 const storage = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
@@ -54,6 +58,12 @@ function isWeekend(dateStr) {
   return d === 0 || d === 6;
 }
 
+function isOnline(lastSeen) {
+  if (!lastSeen) return false;
+  const ts = lastSeen?.toDate ? lastSeen.toDate() : new Date(lastSeen);
+  return Date.now() - ts.getTime() < ONLINE_THRESHOLD_MS;
+}
+
 function useBreakpoint() {
   const [w, setW] = useState(window.innerWidth);
   useEffect(() => {
@@ -61,17 +71,12 @@ function useBreakpoint() {
     window.addEventListener("resize", h);
     return () => window.removeEventListener("resize", h);
   }, []);
-  return {
-    isMobile:  w < 640,
-    isTablet:  w >= 640 && w < 1024,
-    isDesktop: w >= 1024,
-  };
+  return { isMobile: w < 640, isTablet: w >= 640 && w < 1024, isDesktop: w >= 1024 };
 }
 
 function parseMenu(raw) {
   return raw.replace(/<br\/>/g,"\n").split("\n")
-    .map(s => s.replace(/\([\d.,/]+\)/g,"").trim())
-    .filter(Boolean);
+    .map(s => s.replace(/\([\d.,/]+\)/g,"").trim()).filter(Boolean);
 }
 
 async function fetchDayMeals(dateStr) {
@@ -115,40 +120,45 @@ async function fetchMonthSchedule(year, month) {
 }
 
 // ── Firebase 반 코드 검증 ──────────────────────────────
-// classes/{grade}-{cls} 문서에 code 필드 저장
-// 처음 만든 코드가 정답이 됨
 async function verifyOrCreateClass(grade, cls, code) {
   const classId  = `${grade}-${cls}`;
   const classRef = doc(db, "classes", classId);
   const snap     = await getDoc(classRef);
-
   if (!snap.exists()) {
-    // 처음 만드는 경우 → 이 코드가 정답으로 저장됨
     await setDoc(classRef, { code, createdAt: serverTimestamp() });
     return { ok: true, isNew: true };
   }
-
   const savedCode = snap.data().code;
-  if (savedCode !== code) {
-    return { ok: false, isNew: false, savedCode };
-  }
+  if (savedCode !== code) return { ok: false };
   return { ok: true, isNew: false };
 }
 
-// 반 멤버 등록/조회
+// ── 멤버 등록 + 온라인 상태 ──────────────────────────────
 async function registerMember(classCode, grade, cls, name) {
   const memberId  = `${classCode}_${name}`;
   const memberRef = doc(db, "members", memberId);
   await setDoc(memberRef, {
     name, grade, cls, classCode,
     joinedAt: serverTimestamp(),
+    lastSeen: serverTimestamp(),
+    online:   true,
   }, { merge: true });
+  return memberId;
 }
 
-async function fetchMembers(classCode) {
-  const q    = query(collection(db,"members"), where("classCode","==",classCode));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => d.data()).sort((a,b) => a.name.localeCompare(b.name, "ko"));
+async function heartbeat(memberId) {
+  try {
+    await updateDoc(doc(db, "members", memberId), {
+      lastSeen: serverTimestamp(),
+      online:   true,
+    });
+  } catch {}
+}
+
+async function setOffline(memberId) {
+  try {
+    await updateDoc(doc(db, "members", memberId), { online: false });
+  } catch {}
 }
 
 // ══════════════════════════════════════════════════════
@@ -165,7 +175,6 @@ const GLOBAL_CSS = `
   ::placeholder { color:#94a3b8; }
   ::-webkit-scrollbar { width:5px; }
   ::-webkit-scrollbar-thumb { background:#dbeafe; border-radius:4px; }
-
   @keyframes fadeUp  { from{opacity:0;transform:translateY(22px)} to{opacity:1;transform:translateY(0)} }
   @keyframes slideUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
   @keyframes popIn   { 0%{opacity:0;transform:scale(.94)} 100%{opacity:1;transform:scale(1)} }
@@ -173,7 +182,7 @@ const GLOBAL_CSS = `
   @keyframes pulse   { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.85;transform:scale(1.04)} }
   @keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(12px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
   @keyframes spin    { to{transform:rotate(360deg)} }
-
+  @keyframes blink   { 0%,100%{opacity:1} 50%{opacity:.3} }
   .card { background:#fff; border-radius:16px; border:1px solid #e8eef8; box-shadow:0 2px 12px rgba(79,140,255,.06); }
   .hover-card { transition:transform .18s,box-shadow .18s; cursor:pointer; }
   .hover-card:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(79,140,255,.12); }
@@ -181,7 +190,7 @@ const GLOBAL_CSS = `
   .input-field { width:100%; padding:12px 14px; background:#f8faff; border:1.5px solid #e8eef8; border-radius:10px; font-size:14px; color:#1e293b; transition:border-color .2s,box-shadow .2s; }
   .input-field:focus { border-color:#4f8cff; box-shadow:0 0 0 3px rgba(79,140,255,.1); background:#fff; }
   .btn-primary { padding:12px 20px; border:none; border-radius:10px; background:linear-gradient(135deg,#4f8cff,#7c3aed); color:#fff; font-size:14px; font-weight:700; cursor:pointer; box-shadow:0 4px 14px rgba(79,140,255,.3); transition:transform .15s,box-shadow .15s,opacity .15s; }
-  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(79,140,255,.35); }
+  .btn-primary:hover { transform:translateY(-1px); }
   .btn-primary:active { transform:scale(.97); }
   .btn-primary:disabled { opacity:.65; cursor:not-allowed; transform:none; }
   .side-nav-btn { width:100%; padding:10px 14px; border-radius:10px; border:none; display:flex; align-items:center; gap:10px; font-size:14px; font-weight:500; cursor:pointer; transition:all .15s; text-align:left; margin-bottom:2px; background:transparent; color:#64748b; }
@@ -200,11 +209,11 @@ const GLOBAL_CSS = `
   .cal-cell.empty { background:transparent !important; border-color:transparent !important; cursor:default; }
   .cal-cell.weekend-cell { background:#fafafa; border-color:#f5f5f5; }
   .cal-cell.weekend-cell:hover { background:#f5f5f5; }
-
-  /* 반응형 패딩 */
-  .page-padding { padding: 16px; }
-  @media(min-width:640px)  { .page-padding { padding: 20px 24px; } }
-  @media(min-width:1024px) { .page-padding { padding: 24px 32px; } }
+  .online-dot { width:9px; height:9px; border-radius:50%; background:#10b981; border:2px solid #fff; animation:blink 2s ease-in-out infinite; }
+  .offline-dot { width:9px; height:9px; border-radius:50%; background:#e2e8f0; border:2px solid #fff; }
+  .page-padding { padding:16px; }
+  @media(min-width:640px)  { .page-padding { padding:20px 24px; } }
+  @media(min-width:1024px) { .page-padding { padding:24px 32px; } }
 `;
 
 // ══════════════════════════════════════════════════════
@@ -247,8 +256,8 @@ function LoginPage({ onLogin }) {
         return;
       }
       const classCode = code.trim().toUpperCase();
-      await registerMember(classCode, grade, cls, name.trim());
-      onLogin({ name:name.trim(), classCode, grade, cls, isNew: result.isNew });
+      const memberId  = await registerMember(classCode, grade, cls, name.trim());
+      onLogin({ name:name.trim(), classCode, grade, cls, memberId, isNew:result.isNew });
     } catch(e) {
       console.error(e);
       setErr("오류가 발생했어요. 다시 시도해줘요.");
@@ -271,15 +280,11 @@ function LoginPage({ onLogin }) {
           <p style={{ color:"#475569", fontSize:12, marginTop:6 }}>우리 반 전용 일정 · 공지 · 급식 · 학사일정</p>
         </div>
         <div style={{ background:"rgba(255,255,255,.05)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,.1)", borderRadius:20, padding:"24px 20px" }}>
-
           <div style={{ marginBottom:12 }}>
             <label style={LOGIN_LBL}>이름</label>
-            <input value={name} placeholder="홍길동"
-              onChange={e=>{setName(e.target.value);setErr("");}}
-              onKeyDown={e=>e.key==="Enter"&&submit()}
+            <input value={name} placeholder="홍길동" onChange={e=>{setName(e.target.value);setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
               style={{ width:"100%", padding:"12px 14px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:10, color:"#f1f5f9", fontSize:14 }} />
           </div>
-
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
             <div>
               <label style={LOGIN_LBL}>학년</label>
@@ -291,42 +296,27 @@ function LoginPage({ onLogin }) {
               </div>
             </div>
             <div>
-              <label style={LOGIN_LBL}>반</label>
+              <label style={LOGIN_LBL}>반 (1~10반)</label>
               <div style={{ position:"relative" }}>
                 <select value={cls} onChange={e=>setCls(e.target.value)} className="login-select">
-                  {Array.from({length:10},(_,i)=>i+1).map(c=>(
-                    <option key={c} value={String(c)}>{c}반</option>
-                  ))}
+                  {Array.from({length:10},(_,i)=>i+1).map(c=><option key={c} value={String(c)}>{c}반</option>)}
                 </select>
                 <div style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", color:"rgba(255,255,255,.5)", fontSize:11 }}>▾</div>
               </div>
             </div>
           </div>
-
           <div style={{ marginBottom:8 }}>
             <label style={LOGIN_LBL}>반 코드</label>
-            <input value={code} placeholder="4자 이상 (처음이면 새로 만들어짐)"
-              onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}}
-              onKeyDown={e=>e.key==="Enter"&&submit()}
+            <input value={code} placeholder="4자 이상 (처음이면 새 코드 생성)" onChange={e=>{setCode(e.target.value.toUpperCase());setErr("");}} onKeyDown={e=>e.key==="Enter"&&submit()}
               style={{ width:"100%", padding:"12px 14px", background:"rgba(255,255,255,.07)", border:"1.5px solid rgba(255,255,255,.13)", borderRadius:10, color:"#f1f5f9", fontSize:14, letterSpacing:2, fontWeight:700 }} />
-            <p style={{ fontSize:10, color:"rgba(255,255,255,.35)", marginTop:5, lineHeight:1.5 }}>
-              💡 처음 입력한 코드가 우리 반 코드가 됩니다. 친구들에게 공유하세요!
-            </p>
+            <p style={{ fontSize:10, color:"rgba(255,255,255,.3)", marginTop:4, lineHeight:1.5 }}>💡 처음 입력한 코드가 우리 반 코드가 됩니다</p>
           </div>
-
-          {err && (
-            <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:8, padding:"9px 12px", marginBottom:12, lineHeight:1.5 }}>
-              ⚠️ {err}
-            </div>
-          )}
-
+          {err && <div style={{ fontSize:12, color:"#fca5a5", background:"rgba(239,68,68,.12)", borderRadius:8, padding:"9px 12px", marginBottom:12, lineHeight:1.5 }}>⚠️ {err}</div>}
           <button className="btn-primary" onClick={submit} disabled={busy} style={{ width:"100%", marginTop:4, padding:"13px", fontSize:14, fontWeight:800 }}>
-            {busy ? (
-              <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-                <span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,.3)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin .7s linear infinite", display:"inline-block" }} />
-                확인 중...
-              </span>
-            ) : "입장하기 →"}
+            {busy
+              ? <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}><span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,.3)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin .7s linear infinite", display:"inline-block" }} />확인 중...</span>
+              : "입장하기 →"
+            }
           </button>
         </div>
       </div>
@@ -336,22 +326,37 @@ function LoginPage({ onLogin }) {
 const LOGIN_LBL = { display:"block", fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.55)", letterSpacing:1, marginBottom:6 };
 
 // ══════════════════════════════════════════════════════
-// 메인 앱
+// 메인 앱 (heartbeat 포함)
 // ══════════════════════════════════════════════════════
 function MainApp({ user, page, setPage, onLogout }) {
-  const { isMobile, isTablet, isDesktop } = useBreakpoint();
-  const showSidebar = isDesktop;
+  const { isMobile, isDesktop } = useBreakpoint();
+  const showSidebar   = isDesktop;
   const showBottomNav = !isDesktop;
 
   const [schedules, setSchedules] = useState([]);
   const [notices,   setNotices]   = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [toast,     setToast]     = useState(null);
+  const hbRef = useRef(null);
 
   const showToast = useCallback((msg, type="info") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
   }, []);
+
+  // heartbeat - 45초마다 lastSeen 갱신
+  useEffect(() => {
+    if (!user.memberId) return;
+    heartbeat(user.memberId);
+    hbRef.current = setInterval(() => heartbeat(user.memberId), HEARTBEAT_INTERVAL);
+    const handleUnload = () => setOffline(user.memberId);
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      clearInterval(hbRef.current);
+      window.removeEventListener("beforeunload", handleUnload);
+      setOffline(user.memberId);
+    };
+  }, [user.memberId]);
 
   useEffect(() => {
     (async () => {
@@ -363,10 +368,7 @@ function MainApp({ user, page, setPage, onLogout }) {
         ]);
         setSchedules(ss.docs.map(d => ({ id:d.id, ...d.data() })));
         setNotices(ns.docs.map(d => ({ id:d.id, ...d.data() })));
-      } catch(e) {
-        console.error(e);
-        showToast("❌ 데이터 로드 실패","error");
-      }
+      } catch(e) { console.error(e); showToast("❌ 데이터 로드 실패","error"); }
       setLoading(false);
     })();
   }, [user.classCode]);
@@ -396,12 +398,11 @@ function MainApp({ user, page, setPage, onLogout }) {
   return (
     <div style={{ width:"100%", height:"100vh", display:"flex", background:"#f0f4ff", overflow:"hidden" }}>
       {toast && (
-        <div style={{ position:"fixed", bottom: showBottomNav ? 72 : 20, left:"50%", transform:"translateX(-50%)", background: toast.type==="error" ? "#ef4444" : "#1e293b", color:"#fff", padding:"10px 20px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
+        <div style={{ position:"fixed", bottom: showBottomNav?72:20, left:"50%", transform:"translateX(-50%)", background: toast.type==="error"?"#ef4444":"#1e293b", color:"#fff", padding:"10px 20px", borderRadius:30, fontSize:13, fontWeight:600, zIndex:9999, whiteSpace:"nowrap", boxShadow:"0 8px 28px rgba(0,0,0,.22)", animation:"toastIn .25s ease" }}>
           {toast.msg}
         </div>
       )}
 
-      {/* 사이드바 (데스크탑만) */}
       {showSidebar && (
         <aside style={{ width:240, height:"100vh", background:"#fff", borderRight:"1px solid #e8eef8", display:"flex", flexDirection:"column", boxShadow:"2px 0 16px rgba(79,140,255,.06)", flexShrink:0, overflow:"hidden" }}>
           <div style={{ padding:"22px 18px 14px", borderBottom:"1px solid #f0f4ff" }}>
@@ -409,7 +410,7 @@ function MainApp({ user, page, setPage, onLogout }) {
             <div style={{ fontSize:14, fontWeight:900, color:"#1e293b" }}>세종대성 클래스</div>
             <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>{user.classCode} · {user.grade}학년 {user.cls}반</div>
           </div>
-          <nav style={{ flex:1, padding:"10px 10px", overflowY:"auto" }}>
+          <nav style={{ flex:1, padding:"10px", overflowY:"auto" }}>
             {NAV.map(n => (
               <button key={n.id} className={`side-nav-btn${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
                 <span style={{ fontSize:17 }}>{n.icon}</span>{n.label}
@@ -418,7 +419,10 @@ function MainApp({ user, page, setPage, onLogout }) {
           </nav>
           <div style={{ padding:"12px", borderTop:"1px solid #f0f4ff" }}>
             <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:9 }}>
-              <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13, flexShrink:0 }}>{user.name[0]}</div>
+              <div style={{ position:"relative" }}>
+                <div style={{ width:34, height:34, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13 }}>{user.name[0]}</div>
+                <div className="online-dot" style={{ position:"absolute", bottom:0, right:0 }} />
+              </div>
               <div>
                 <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
                 <div style={{ fontSize:11, color:"#94a3b8" }}>{user.grade}학년 {user.cls}반</div>
@@ -433,18 +437,8 @@ function MainApp({ user, page, setPage, onLogout }) {
         </aside>
       )}
 
-      {/* 콘텐츠 영역 */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
-
-        {/* 상단 헤더 */}
-        <header style={{
-          background: showSidebar ? "#fff" : "linear-gradient(135deg,#1d4ed8,#4f46e5)",
-          borderBottom: showSidebar ? "1px solid #e8eef8" : "none",
-          padding: showSidebar ? "12px 28px" : "11px 18px",
-          display:"flex", alignItems:"center", justifyContent:"space-between",
-          boxShadow: showSidebar ? "none" : "0 3px 14px rgba(29,78,216,.25)",
-          flexShrink:0,
-        }}>
+        <header style={{ background: showSidebar?"#fff":"linear-gradient(135deg,#1d4ed8,#4f46e5)", borderBottom: showSidebar?"1px solid #e8eef8":"none", padding: showSidebar?"12px 28px":"11px 18px", display:"flex", alignItems:"center", justifyContent:"space-between", boxShadow: showSidebar?"none":"0 3px 14px rgba(29,78,216,.25)", flexShrink:0 }}>
           {showSidebar ? (
             <>
               <div>
@@ -456,7 +450,10 @@ function MainApp({ user, page, setPage, onLogout }) {
                 </div>
               </div>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <div style={{ width:32, height:32, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:12 }}>{user.name[0]}</div>
+                <div style={{ position:"relative" }}>
+                  <div style={{ width:32, height:32, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:12 }}>{user.name[0]}</div>
+                  <div className="online-dot" style={{ position:"absolute", bottom:0, right:0 }} />
+                </div>
                 <div style={{ fontSize:12, fontWeight:700, color:"#1e293b" }}>{user.name}</div>
               </div>
             </>
@@ -471,22 +468,19 @@ function MainApp({ user, page, setPage, onLogout }) {
           )}
         </header>
 
-        {/* 페이지 */}
-        <main style={{ flex:1, overflowY:"auto", paddingBottom: showBottomNav ? 68 : 0 }}
-          className="page-padding">
+        <main style={{ flex:1, overflowY:"auto", paddingBottom: showBottomNav?68:0 }} className="page-padding">
           {loading
             ? <div style={{ textAlign:"center", padding:"70px 20px" }}><div style={{ fontSize:38, animation:"float 1.5s ease-in-out infinite" }}>⏳</div><div style={{ fontSize:13, color:"#94a3b8", marginTop:12, fontWeight:600 }}>불러오는 중...</div></div>
             : <div key={page} style={{ animation:"slideUp .3s ease" }}>{pages[page]}</div>
           }
         </main>
 
-        {/* 하단 탭 (모바일+태블릿) */}
         {showBottomNav && (
           <nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:"1px solid #e8eef8", display:"flex", boxShadow:"0 -3px 14px rgba(0,0,0,.06)", zIndex:100 }}>
             {NAV.map(n => (
               <button key={n.id} className={`bottom-tab${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
-                <span style={{ fontSize: isMobile ? 19 : 21 }}>{n.icon}</span>
-                <span style={{ fontSize: isMobile ? (n.label.length > 3 ? 7 : 8) : 9, fontWeight: page===n.id ? 800 : 500, color: page===n.id ? "#1d4ed8" : "#94a3b8" }}>{n.label}</span>
+                <span style={{ fontSize: isMobile?18:20 }}>{n.icon}</span>
+                <span style={{ fontSize: isMobile?(n.label.length>3?7:8):9, fontWeight: page===n.id?800:500, color: page===n.id?"#1d4ed8":"#94a3b8" }}>{n.label}</span>
               </button>
             ))}
           </nav>
@@ -500,18 +494,18 @@ function MainApp({ user, page, setPage, onLogout }) {
 // 홈
 // ══════════════════════════════════════════════════════
 function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
-  const { isMobile, isDesktop } = useBreakpoint();
+  const { isDesktop } = useBreakpoint();
   const now      = new Date();
   const dayNames = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
   const urgentSchedules = upcoming.filter(s => getDday(s.date).urgent).slice(0,4);
 
   return (
     <div style={{ width:"100%", maxWidth:960, margin:"0 auto" }}>
-      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:18, padding: isMobile ? "18px" : "24px 28px", marginBottom:18, color:"#fff", boxShadow:"0 10px 32px rgba(29,78,216,.25)", position:"relative", overflow:"hidden" }}>
+      <div style={{ background:"linear-gradient(135deg,#1d4ed8,#4f46e5 55%,#7c3aed)", borderRadius:18, padding: isDesktop?"24px 28px":"18px", marginBottom:18, color:"#fff", boxShadow:"0 10px 32px rgba(29,78,216,.25)", position:"relative", overflow:"hidden" }}>
         <div style={{ position:"absolute", right:-20, top:-20, width:150, height:150, borderRadius:"50%", background:"rgba(255,255,255,.07)", pointerEvents:"none" }} />
         <div style={{ position:"relative" }}>
           <div style={{ fontSize:10, color:"rgba(255,255,255,.55)", fontWeight:700, letterSpacing:2, marginBottom:3 }}>TODAY</div>
-          <div style={{ fontSize: isMobile ? 19 : 22, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length ? 10 : 0 }}>
+          <div style={{ fontSize: isDesktop?22:19, fontWeight:900, letterSpacing:-.5, marginBottom: todaySch.length?10:0 }}>
             {now.getMonth()+1}월 {now.getDate()}일 {dayNames[now.getDay()]}
           </div>
           {todaySch.length > 0
@@ -530,7 +524,7 @@ function HomePage({ user, schedules, notices, upcoming, todaySch, setPage }) {
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:14 }}>
+      <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:14 }}>
         <div className="card" style={{ padding:18 }}>
           <SectionHeader title="⏳ 다가오는 일정" onMore={() => setPage("schedule")} />
           {upcoming.length === 0
@@ -627,10 +621,10 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
           <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>수행평가·시험·행사를 등록해요</p>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          <button onClick={() => setHideWeekend(!hideWeekend)} style={{ padding:"6px 12px", border:"none", borderRadius:18, cursor:"pointer", fontSize:11, fontWeight:700, background: hideWeekend ? "#eff6ff" : "#f1f5f9", color: hideWeekend ? "#1d4ed8" : "#94a3b8", transition:"all .15s" }}>
+          <button onClick={() => setHideWeekend(!hideWeekend)} style={{ padding:"6px 12px", border:"none", borderRadius:18, cursor:"pointer", fontSize:11, fontWeight:700, background: hideWeekend?"#eff6ff":"#f1f5f9", color: hideWeekend?"#1d4ed8":"#94a3b8", transition:"all .15s" }}>
             {hideWeekend ? "주말 제외 ✓" : "주말 포함"}
           </button>
-          <button onClick={() => setShowForm(!showForm)} style={{ padding:"8px 16px", border:"none", borderRadius:10, background: showForm ? "#f1f5f9" : "linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm ? "#64748b" : "#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
+          <button onClick={() => setShowForm(!showForm)} style={{ padding:"8px 16px", border:"none", borderRadius:10, background: showForm?"#f1f5f9":"linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm?"#64748b":"#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
             {showForm ? "✕ 닫기" : "+ 추가"}
           </button>
         </div>
@@ -638,7 +632,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
 
       {showForm && (
         <div className="card" style={{ padding:20, marginBottom:18, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr 1fr", gap:10, marginBottom:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile?"1fr":"2fr 1fr 1fr", gap:10, marginBottom:12 }}>
             <div>
               <label style={LBL}>제목</label>
               <input className="input-field" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="예: 영어 수행평가" />
@@ -661,7 +655,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       {upcoming.length > 0 && (
         <section style={{ marginBottom:22 }}>
           <GroupLabel>다가오는 일정 ({upcoming.length})</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:10 }}>
             {upcoming.map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} />)}
           </div>
         </section>
@@ -669,7 +663,7 @@ function SchedulePage({ user, schedules, setSchedules, showToast }) {
       {past.length > 0 && (
         <section>
           <GroupLabel faded>지난 일정</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap:8, opacity:.5 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 1fr":"1fr", gap:8, opacity:.5 }}>
             {past.slice(0,6).map(s=><SchedCard key={s.id} s={s} user={user} onDel={del} past />)}
           </div>
         </section>
@@ -683,7 +677,7 @@ function SchedCard({ s, user, onDel, past }) {
   const dd   = getDday(s.date);
   const meta = TYPE_META[s.type] || TYPE_META["기타"];
   return (
-    <div className="card hover-card" style={{ padding:14, borderLeft:`3px solid ${dd.urgent&&!past ? meta.color : "#f0f4ff"}` }}>
+    <div className="card hover-card" style={{ padding:14, borderLeft:`3px solid ${dd.urgent&&!past?meta.color:"#f0f4ff"}` }}>
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:7 }}>
         <span className="tag" style={{ background:meta.bg, color:meta.color }}>{meta.icon} {s.type}</span>
         <div style={{ display:"flex", alignItems:"center", gap:7 }}>
@@ -743,7 +737,7 @@ function AcademicPage() {
 
   return (
     <div style={{ width:"100%", maxWidth:960, margin:"0 auto" }}>
-      <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "1fr 260px" : "1fr", gap:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns: isDesktop?"1fr 260px":"1fr", gap:18 }}>
         <div className="card" style={{ padding:18 }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
             <button onClick={prevMonth} style={{ background:"#f0f4ff", border:"none", width:32, height:32, borderRadius:8, cursor:"pointer", fontSize:17, color:"#4f8cff", display:"flex", alignItems:"center", justifyContent:"center" }}>‹</button>
@@ -762,10 +756,10 @@ function AcademicPage() {
 
           <div className="cal-grid">
             {cells.map((day, idx) => {
-              const colIdx  = idx % 7;
-              const isSun   = colIdx === 0;
-              const isSat   = colIdx === 6;
-              const isWknd  = isSun || isSat;
+              const colIdx = idx % 7;
+              const isSun  = colIdx === 0;
+              const isSat  = colIdx === 6;
+              const isWknd = isSun || isSat;
               if (!day) return <div key={idx} className="cal-cell empty" />;
               const dash    = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
               const dayEvts = eventsForDay(day);
@@ -773,12 +767,10 @@ function AcademicPage() {
               const isSel   = selected === day;
               return (
                 <div key={idx} className={`cal-cell${isWknd?" weekend-cell":""}${isToday?" today":""}${isSel?" selected":""}`}
-                  onClick={() => setSelected(isSel ? null : day)}>
-                  <div style={{ fontSize:11, fontWeight: isToday?800:400, textAlign:"right", marginBottom:2, color: isToday?"#4f8cff":isSun?"#ef4444":isSat?"#3b82f6":"#64748b" }}>
-                    {day}
-                  </div>
+                  onClick={() => setSelected(isSel?null:day)}>
+                  <div style={{ fontSize:11, fontWeight:isToday?800:400, textAlign:"right", marginBottom:2, color: isToday?"#4f8cff":isSun?"#ef4444":isSat?"#3b82f6":"#64748b" }}>{day}</div>
                   {dayEvts.slice(0,isMobile?1:2).map((e,i) => (
-                    <div key={i} style={{ fontSize:8, padding:"2px 3px", borderRadius:3, marginBottom:1, background: isWknd?"#e0e7ff":"#dbeafe", color: isWknd?"#6366f1":"#1d4ed8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600 }}>
+                    <div key={i} style={{ fontSize:8, padding:"2px 3px", borderRadius:3, marginBottom:1, background:isWknd?"#e0e7ff":"#dbeafe", color:isWknd?"#6366f1":"#1d4ed8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", fontWeight:600 }}>
                       {e.title}
                     </div>
                   ))}
@@ -789,7 +781,6 @@ function AcademicPage() {
           </div>
         </div>
 
-        {/* 사이드 패널 */}
         <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
           {selected && (
             <div className="card" style={{ padding:16, animation:"popIn .2s ease", borderTop:"3px solid #4f8cff" }}>
@@ -806,7 +797,7 @@ function AcademicPage() {
               }
             </div>
           )}
-          <div className="card" style={{ padding:16, flex:1, overflowY:"auto", maxHeight: isDesktop ? 460 : 300 }}>
+          <div className="card" style={{ padding:16, flex:1, overflowY:"auto", maxHeight: isDesktop?460:280 }}>
             <div style={{ fontSize:13, fontWeight:800, color:"#1e293b", marginBottom:10 }}>{MONTH_KR[month-1]} 학사일정</div>
             {loading ? (
               <div style={{ fontSize:12, color:"#94a3b8", textAlign:"center", padding:"14px 0" }}>불러오는 중...</div>
@@ -865,17 +856,16 @@ function NoticePage({ user, notices, setNotices, showToast }) {
 
   function fmtDate(val) {
     if (!val) return "";
-    try { return (val.toDate ? val.toDate() : new Date(val)).toLocaleDateString("ko-KR",{month:"short",day:"numeric"}); } catch { return ""; }
+    try { return (val.toDate?val.toDate():new Date(val)).toLocaleDateString("ko-KR",{month:"short",day:"numeric"}); } catch { return ""; }
   }
 
   return (
     <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
       <PageHeader title="공지 공유" sub="친구들에게 중요한 내용을 공유해요" action={
         <button onClick={() => setShowForm(!showForm)} style={{ padding:"8px 16px", border:"none", borderRadius:10, background: showForm?"#f1f5f9":"linear-gradient(135deg,#4f8cff,#7c3aed)", color: showForm?"#64748b":"#fff", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .2s" }}>
-          {showForm ? "✕ 닫기" : "+ 작성"}
+          {showForm?"✕ 닫기":"+ 작성"}
         </button>
       } />
-
       {showForm && (
         <div className="card" style={{ padding:20, marginBottom:18, animation:"popIn .25s ease", borderTop:"3px solid #4f8cff" }}>
           <div style={{ marginBottom:10 }}>
@@ -889,7 +879,6 @@ function NoticePage({ user, notices, setNotices, showToast }) {
           <button className="btn-primary" onClick={add} disabled={saving}>{saving?"등록 중...":"공지 올리기"}</button>
         </div>
       )}
-
       {notices.length === 0
         ? <EmptyFull icon="📢" text="아직 공지가 없어요" sub="위 버튼으로 친구들에게 알려주세요!" />
         : (
@@ -951,11 +940,10 @@ function LunchPage() {
   return (
     <div style={{ width:"100%", maxWidth:820, margin:"0 auto" }}>
       <PageHeader title="급식 메뉴" sub="세종대성고등학교 이번 주 급식이에요" />
-
       {Object.keys(todayMeals).length > 0 ? (
         <div style={{ marginBottom:18 }}>
           <GroupLabel>오늘의 급식</GroupLabel>
-          <div style={{ display:"grid", gridTemplateColumns: isMobile?"1fr":isDesktop?"repeat(3,1fr)":"repeat(3,1fr)", gap:10 }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile?"1fr":"repeat(3,1fr)", gap:10 }}>
             {mealTypes.map(type => {
               const meta  = MEAL_META[type];
               const items = todayMeals[type];
@@ -964,9 +952,7 @@ function LunchPage() {
                 <div key={type} style={{ background:`linear-gradient(135deg,${meta.color},${meta.color}bb)`, borderRadius:14, padding:"16px", color:"#fff", boxShadow:`0 6px 20px ${meta.color}44` }}>
                   <div style={{ fontSize:10, color:"rgba(255,255,255,.75)", fontWeight:700, letterSpacing:1.2, marginBottom:7 }}>{meta.icon} {meta.label.toUpperCase()}</div>
                   <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
-                    {items.map((item,i) => (
-                      <span key={i} style={{ background:"rgba(255,255,255,.2)", padding:"3px 8px", borderRadius:20, fontSize:11, fontWeight:600 }}>{item}</span>
-                    ))}
+                    {items.map((item,i) => <span key={i} style={{ background:"rgba(255,255,255,.2)", padding:"3px 8px", borderRadius:20, fontSize:11, fontWeight:600 }}>{item}</span>)}
                   </div>
                 </div>
               );
@@ -976,7 +962,6 @@ function LunchPage() {
       ) : (
         <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8", marginBottom:18 }}>오늘은 급식 정보가 없어요 😢</div>
       )}
-
       <div style={{ display:"flex", gap:7, marginBottom:14 }}>
         {mealTypes.map(type => {
           const meta = MEAL_META[type];
@@ -987,7 +972,6 @@ function LunchPage() {
           );
         })}
       </div>
-
       {menuDays.length === 0 ? (
         <div className="card" style={{ padding:22, textAlign:"center", color:"#94a3b8" }}>이번 주 급식 정보가 없어요</div>
       ) : (
@@ -1000,16 +984,14 @@ function LunchPage() {
             return (
               <div key={date} className="card hover-card" style={{ padding:14, borderLeft:`3px solid ${isToday?meta.color:"#f0f4ff"}` }}>
                 <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:9 }}>
-                  <span className="tag" style={{ background: isToday?meta.bg:"#f1f5f9", color: isToday?meta.color:"#64748b" }}>
+                  <span className="tag" style={{ background:isToday?meta.bg:"#f1f5f9", color:isToday?meta.color:"#64748b" }}>
                     {date.slice(5).replace("-","/")} ({DAY_KR[d.getDay()]})
                   </span>
                   {isToday && <span style={{ fontSize:11, color:meta.color, fontWeight:700 }}>오늘</span>}
                 </div>
                 {items ? (
                   <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
-                    {items.map((item,i) => (
-                      <span key={i} style={{ fontSize:11, padding:"3px 8px", borderRadius:18, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>
-                    ))}
+                    {items.map((item,i) => <span key={i} style={{ fontSize:11, padding:"3px 8px", borderRadius:18, background:"#f8faff", color:"#475569", fontWeight:500 }}>{item}</span>)}
                   </div>
                 ) : <div style={{ fontSize:12, color:"#cbd5e1" }}>정보 없음</div>}
               </div>
@@ -1022,28 +1004,33 @@ function LunchPage() {
 }
 
 // ══════════════════════════════════════════════════════
-// 반 인원 페이지
+// 반 인원 - 실시간 onSnapshot
 // ══════════════════════════════════════════════════════
 function MembersPage({ user }) {
   const { isDesktop } = useBreakpoint();
-  const [members,  setMembers]  = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [now,     setNow]     = useState(Date.now());
 
+  // 1분마다 now 갱신 → 온라인 상태 자동 재계산
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const data = await fetchMembers(user.classCode);
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  // 실시간 구독
+  useEffect(() => {
+    const q    = query(collection(db,"members"), where("classCode","==",user.classCode));
+    const unsub = onSnapshot(q, snap => {
+      const data = snap.docs.map(d => d.data()).sort((a,b) => a.name.localeCompare(b.name,"ko"));
       setMembers(data);
       setLoading(false);
-    })();
+    }, err => { console.error(err); setLoading(false); });
+    return () => unsub();
   }, [user.classCode]);
 
-  const gradeGroups = members.reduce((acc, m) => {
-    const key = `${m.grade}학년 ${m.cls}반`;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(m);
-    return acc;
-  }, {});
+  const onlineMembers  = members.filter(m => isOnline(m.lastSeen));
+  const offlineMembers = members.filter(m => !isOnline(m.lastSeen));
 
   const AVATAR_COLORS = [
     "linear-gradient(135deg,#4f8cff,#7c3aed)",
@@ -1053,17 +1040,43 @@ function MembersPage({ user }) {
     "linear-gradient(135deg,#3b82f6,#10b981)",
   ];
 
+  function MemberCard({ m, i }) {
+    const online = isOnline(m.lastSeen);
+    return (
+      <div className="card hover-card" style={{ padding:14, textAlign:"center", opacity: online?1:.7 }}>
+        <div style={{ position:"relative", width:46, height:46, margin:"0 auto 8px" }}>
+          <div style={{ width:46, height:46, borderRadius:"50%", background: AVATAR_COLORS[i % AVATAR_COLORS.length], display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:18 }}>
+            {m.name[0]}
+          </div>
+          <div className={online?"online-dot":"offline-dot"} style={{ position:"absolute", bottom:1, right:1 }} />
+        </div>
+        <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>
+          {m.name}
+          {m.name === user.name && <span style={{ fontSize:10, color:"#4f8cff", marginLeft:3 }}>나</span>}
+        </div>
+        <div style={{ fontSize:10, color: online?"#10b981":"#94a3b8", marginTop:2, fontWeight:600 }}>
+          {online ? "🟢 접속 중" : "⚫ 오프라인"}
+        </div>
+        <div style={{ fontSize:10, color:"#cbd5e1", marginTop:1 }}>{m.grade}학년 {m.cls}반</div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ width:"100%", maxWidth:720, margin:"0 auto" }}>
+      {/* 헤더 */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
         <div>
           <h2 style={{ fontSize:18, fontWeight:900, color:"#1e293b" }}>반 인원</h2>
-          <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>
-            {user.classCode} 반 · 총 {members.length}명
-          </p>
+          <p style={{ fontSize:12, color:"#94a3b8", marginTop:2 }}>{user.classCode} 반 · 총 {members.length}명</p>
         </div>
-        <div style={{ padding:"7px 13px", borderRadius:18, background:"#eff6ff", color:"#1d4ed8", fontSize:13, fontWeight:800 }}>
-          {members.length}명
+        <div style={{ display:"flex", gap:8 }}>
+          <div style={{ padding:"6px 12px", borderRadius:18, background:"#d1fae5", color:"#059669", fontSize:12, fontWeight:800 }}>
+            🟢 {onlineMembers.length}명 접속 중
+          </div>
+          <div style={{ padding:"6px 12px", borderRadius:18, background:"#f1f5f9", color:"#94a3b8", fontSize:12, fontWeight:700 }}>
+            전체 {members.length}명
+          </div>
         </div>
       </div>
 
@@ -1076,37 +1089,25 @@ function MembersPage({ user }) {
         <EmptyFull icon="👥" text="아직 아무도 없어요" sub="친구들에게 반 코드를 공유해요!" />
       ) : (
         <>
-          {/* 내 정보 카드 */}
-          <div className="card" style={{ padding:16, marginBottom:16, borderLeft:"3px solid #4f8cff", display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:42, height:42, borderRadius:"50%", background:"linear-gradient(135deg,#4f8cff,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:16, flexShrink:0 }}>
-              {user.name[0]}
-            </div>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:14, fontWeight:800, color:"#1e293b" }}>{user.name} <span style={{ fontSize:11, color:"#4f8cff", fontWeight:700 }}>나</span></div>
-              <div style={{ fontSize:11, color:"#94a3b8", marginTop:1 }}>{user.grade}학년 {user.cls}반</div>
-            </div>
-          </div>
-
-          {/* 그룹별 멤버 */}
-          {Object.entries(gradeGroups).sort().map(([groupName, groupMembers]) => (
-            <div key={groupName} style={{ marginBottom:18 }}>
-              <GroupLabel>{groupName} ({groupMembers.length}명)</GroupLabel>
-              <div style={{ display:"grid", gridTemplateColumns: isDesktop ? "repeat(4,1fr)" : "repeat(3,1fr)", gap:10 }}>
-                {groupMembers.map((m, i) => (
-                  <div key={m.name} className="card hover-card" style={{ padding:14, textAlign:"center" }}>
-                    <div style={{ width:44, height:44, borderRadius:"50%", background: AVATAR_COLORS[i % AVATAR_COLORS.length], display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:17, margin:"0 auto 8px" }}>
-                      {m.name[0]}
-                    </div>
-                    <div style={{ fontSize:13, fontWeight:700, color:"#1e293b" }}>
-                      {m.name}
-                      {m.name === user.name && <span style={{ fontSize:10, color:"#4f8cff", marginLeft:4 }}>나</span>}
-                    </div>
-                    <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{m.grade}학년 {m.cls}반</div>
-                  </div>
-                ))}
+          {/* 접속 중 */}
+          {onlineMembers.length > 0 && (
+            <section style={{ marginBottom:22 }}>
+              <GroupLabel>🟢 접속 중 ({onlineMembers.length})</GroupLabel>
+              <div style={{ display:"grid", gridTemplateColumns: isDesktop?"repeat(4,1fr)":"repeat(3,1fr)", gap:10 }}>
+                {onlineMembers.map((m,i) => <MemberCard key={m.name} m={m} i={i} />)}
               </div>
-            </div>
-          ))}
+            </section>
+          )}
+
+          {/* 오프라인 */}
+          {offlineMembers.length > 0 && (
+            <section>
+              <GroupLabel faded>오프라인 ({offlineMembers.length})</GroupLabel>
+              <div style={{ display:"grid", gridTemplateColumns: isDesktop?"repeat(4,1fr)":"repeat(3,1fr)", gap:10 }}>
+                {offlineMembers.map((m,i) => <MemberCard key={m.name} m={m} i={onlineMembers.length+i} />)}
+              </div>
+            </section>
+          )}
         </>
       )}
     </div>
@@ -1114,7 +1115,7 @@ function MembersPage({ user }) {
 }
 
 // ══════════════════════════════════════════════════════
-// 공통 컴포넌트
+// 공통
 // ══════════════════════════════════════════════════════
 function PageHeader({ title, sub, action }) {
   return (
